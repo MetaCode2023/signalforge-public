@@ -238,6 +238,103 @@ def _adjusted(bar: Bar) -> Bar:
     )
 
 
+def _manual_scaled(bar: Bar, numerator: int, denominator: int) -> Bar:
+    o, h, low, c = (
+        (x * denominator / numerator).quantize(PRICE_QUANT)
+        for x in (bar.open, bar.high, bar.low, bar.close)
+    )
+    return Bar(
+        symbol=bar.symbol,
+        trade_date=bar.trade_date,
+        open=o,
+        high=max(h, o, c),
+        low=min(low, o, c),
+        close=c,
+        volume=int((Decimal(bar.volume * numerator) / denominator).to_integral_value()),
+        adj_close=c,
+        source=bar.source,
+        volume_known=bar.volume_known,
+    )
+
+
+MANUAL_JUMP_TOLERANCE = Decimal("0.10")
+
+
+def _vendor_shows_jump(bars: list[Bar], action) -> bool:
+    """Whether the vendor-adjusted series still jumps across the action's date.
+
+    A manual action exists because the vendor's adj_close did not fold it in.
+    If the adjusted close already moves by about the manual ratio there, the
+    vendor has since fixed it and applying the action again would double it.
+    """
+    on = next((b for b in bars if b.trade_date == action.effective_date), None)
+    prior = [b for b in bars if b.trade_date < action.effective_date]
+    if on is None or not prior or on.close <= ZERO or prior[-1].close <= ZERO:
+        return False
+    ratio = Decimal(action.numerator) / Decimal(action.denominator)
+    seen = prior[-1].close / on.close
+    return abs(seen / ratio - 1) <= MANUAL_JUMP_TOLERANCE
+
+
+def _apply_manual_splits(
+    warehouse: Warehouse, bars: list[Bar]
+) -> tuple[list[Bar], list[str]]:
+    """Fold source='manual' splits into already-adjusted bars.
+
+    Bars dated before a split's effective date are scaled by denominator /
+    numerator, cumulatively over every later manual split. Vendor splits are
+    not touched: they are already inside adj_close. A manual action is applied
+    only while the vendor-adjusted series still jumps across its date; one the
+    vendor has since folded in, or one with no bar to check against, is skipped
+    and named in the notes.
+    """
+    symbols = sorted({b.symbol for b in bars})
+    manual = [
+        a
+        for a in warehouse.load_corporate_actions(symbols=symbols, source="manual")
+        if a.action_type == "split"
+    ]
+    if not manual:
+        return bars, []
+    series: dict[str, list[Bar]] = {}
+    for bar in bars:
+        series.setdefault(bar.symbol, []).append(bar)
+    by_symbol: dict[str, list] = {}
+    notes: list[str] = []
+    for action in manual:
+        label = f"{action.symbol} {action.effective_date} ({action.numerator}:{action.denominator})"
+        if _vendor_shows_jump(series.get(action.symbol, []), action):
+            by_symbol.setdefault(action.symbol, []).append(action)
+        else:
+            notes.append(
+                f"MANUAL SPLIT SKIPPED: {label}: the vendor-adjusted series shows no "
+                "matching jump across that date (already folded in, or no bar to check), "
+                "so it was not applied again."
+            )
+    out: list[Bar] = []
+    for bar in bars:
+        later = [a for a in by_symbol.get(bar.symbol, ()) if bar.trade_date < a.effective_date]
+        if not later:
+            out.append(bar)
+            continue
+        numerator = denominator = 1
+        for action in later:
+            numerator *= action.numerator
+            denominator *= action.denominator
+        out.append(_manual_scaled(bar, numerator, denominator))
+    notes.extend(
+        f"MANUAL SPLIT ADJUSTMENT: {symbol} bars before "
+        + ", ".join(
+            f"{a.effective_date} ({a.numerator}:{a.denominator})"
+            for a in sorted(actions, key=lambda a: a.effective_date)
+        )
+        + " are scaled by the recorded manual split(s) because the vendor's adjusted "
+        "close did not fold them in."
+        for symbol, actions in sorted(by_symbol.items())
+    )
+    return out, notes
+
+
 def ohlcv_history(
     warehouse: Warehouse,
     symbols: list[str],
@@ -333,7 +430,9 @@ def ohlcv_history(
                 "those bars stay on RAW prices inside an adjusted-basis run."
             )
         bars = [_adjusted(b) for b in bars]
+        bars, manual_notes = _apply_manual_splits(warehouse, bars)
         notes.append(ADJUSTED_BASIS_NOTE)
+        notes.extend(manual_notes)
         basis = ", adjusted price basis"
     return HistoryBundle(
         history=PriceHistory.from_bars(bars),

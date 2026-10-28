@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS active_strategy (
     parameters VARCHAR NOT NULL,
     approved_by VARCHAR NOT NULL,
     reason VARCHAR NOT NULL,
-    approved_at TIMESTAMP
+    approved_at TIMESTAMP,
+    book_id VARCHAR DEFAULT 'series:NASDAQCOM'
 );
 CREATE TABLE IF NOT EXISTS paper_runs (
     run_id VARCHAR,
@@ -111,6 +112,7 @@ def ensure_schema(con) -> None:
     """
     sessions = _columns(con, "paper_sessions")
     runs = _columns(con, "paper_runs")
+    approvals = _columns(con, "active_strategy")
     if sessions and "book_id" not in sessions:
         con.execute("BEGIN TRANSACTION")
         try:
@@ -130,6 +132,8 @@ def ensure_schema(con) -> None:
             raise
     if runs and "book_id" not in runs:
         con.execute("ALTER TABLE paper_runs ADD COLUMN book_id VARCHAR DEFAULT 'series:NASDAQCOM'")
+    if approvals and "book_id" not in approvals:
+        con.execute("ALTER TABLE active_strategy ADD COLUMN book_id VARCHAR DEFAULT 'series:NASDAQCOM'")
     con.execute(SCHEMA)
 
 
@@ -214,9 +218,18 @@ def paper_result(
 
 
 def record_active_strategy(
-    warehouse, *, strategy_id: str, parameters: dict, approved_by: str, reason: str
+    warehouse,
+    *,
+    strategy_id: str,
+    parameters: dict,
+    approved_by: str,
+    reason: str,
+    book_id: str = DEFAULT_BOOK_ID,
 ) -> None:
-    """Record the strategy approved for paper trading.
+    """Record the strategy approved for paper trading, for one book.
+
+    An approval covers only the book it names: a runner for any other book
+    does not see it.
 
     Requires a named human and a reason, for the same reason the promotion
     gate does: an approval with nobody's name on it is not an approval.
@@ -233,7 +246,7 @@ def record_active_strategy(
     ).fetchall()[0][0]
     warehouse.con.execute(
         "INSERT INTO active_strategy (seq, strategy_id, parameters, approved_by, "
-        "reason, approved_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "reason, approved_at, book_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             seq,
             strategy_id,
@@ -241,6 +254,7 @@ def record_active_strategy(
             approved_by.strip(),
             reason.strip(),
             datetime.now(),
+            book_id,
         ],
     )
 
@@ -289,7 +303,8 @@ class PaperRunner:
         """Return (strategy_id, params, approval_source, detail), or refuse."""
         rows = self.warehouse.con.execute(
             "SELECT strategy_id, parameters, approved_by, reason FROM active_strategy "
-            "ORDER BY seq DESC LIMIT 1"
+            "WHERE coalesce(book_id, ?) = ? ORDER BY seq DESC LIMIT 1",
+            [DEFAULT_BOOK_ID, self.book_id],
         ).fetchall()
         if rows:
             strategy_id, params_json, approved_by, reason = rows[0]

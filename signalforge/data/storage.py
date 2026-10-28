@@ -176,7 +176,10 @@ def _weekdays_between(a: date, b: date) -> int:
 
 
 class Warehouse:
-    def __init__(self, path: str | Path = DEFAULT_PATH) -> None:
+    def __init__(self, path: str | Path = DEFAULT_PATH, *, read_only: bool = False) -> None:
+        if read_only:
+            self.con = duckdb.connect(str(path), read_only=True)
+            return
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.con = duckdb.connect(str(path))

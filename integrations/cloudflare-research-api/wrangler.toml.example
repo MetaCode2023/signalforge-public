@@ -1,0 +1,15 @@
+name = "signalforge-research-api"
+main = "src/index.js"
+compatibility_date = "2026-10-26"
+workers_dev = false
+
+# Configure a route or custom domain protected by Cloudflare Access before deployment.
+[[d1_databases]]
+binding = "DB"
+database_name = "signalforge-research"
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+[triggers]
+crons = ["0 7 * * *"]
+
+# Secrets via wrangler secret put: SIGNALFORGE_INGEST_SECRET and SIGNALFORGE_READ_TOKEN.

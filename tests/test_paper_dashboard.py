@@ -107,12 +107,16 @@ def drive(warehouse, history, symbol, *, approved=False):
             warehouse, strategy_id="ma_trend", parameters=params,
             approved_by="the owner", reason="test approval",
         )
-        runner = PaperRunner(warehouse=warehouse, research=research, risk=RiskConfig())
+        runner = PaperRunner(
+            warehouse=warehouse, research=research, risk=RiskConfig(),
+            start=history.trading_days[0],
+        )
     else:
         runner = PaperRunner(
             warehouse=warehouse, research=research, risk=RiskConfig(),
             override_strategy=("ma_trend", params),
             override_reason=OVERRIDE_REASON,
+            start=history.trading_days[0],
         )
     run = runner.run(history, through=history.trading_days[-1])
     return runner, run, research

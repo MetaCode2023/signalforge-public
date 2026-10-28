@@ -84,6 +84,7 @@ def paper_equity(history, strategy_id, params, tmp_path):
             risk=RiskConfig(),
             override_strategy=(strategy_id, params),
             override_reason="engine/broker agreement test",
+            start=history.trading_days[0],
         )
         runner.run(history, through=DAYS[-1])
         statements = runner.broker.statements

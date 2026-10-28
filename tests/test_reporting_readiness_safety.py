@@ -17,7 +17,7 @@ from signalforge.data.storage import Warehouse
 from signalforge.learning.experiments import run_experiment
 from signalforge.learning.registry import ExperimentRegistry, StrategySpec
 from signalforge.paper.broker import PaperBroker
-from signalforge.paper.runner import PaperRunner, RunnerRefusal
+from signalforge.paper.runner import PaperRunner
 from signalforge.strategies.benchmark import BuyAndHold
 
 
@@ -119,24 +119,26 @@ def test_failed_cycle_returns_the_same_complete_event_as_the_log(tmp_path):
     assert event["checked_at"] == NOW.isoformat()
 
 
-def test_restarting_with_a_fresh_cash_book_cannot_advance_sessions(tmp_path, uptrend_history):
+def test_restarting_restores_the_book_instead_of_starting_from_fresh_cash(tmp_path, uptrend_history):
     warehouse = Warehouse(tmp_path / "paper.duckdb")
     kwargs = dict(warehouse=warehouse, research=ResearchConfig(universe=("UP",)), risk=RiskConfig(),
                   override_strategy=("buy_and_hold", {"symbols": ("UP",), "target_weight": D("0.05")}),
-                  override_reason="bounded regression fixture")
+                  override_reason="bounded regression fixture", start=uptrend_history.trading_days[0])
     try:
         original = PaperRunner(**kwargs)
         days = uptrend_history.trading_days
         original.run(uptrend_history, through=days[20])
         assert original.broker.portfolio().quantity_of("UP") > 0
-        before = warehouse.con.execute("SELECT * FROM paper_sessions ORDER BY session_date").fetchall()
         restarted = PaperRunner(**kwargs)
-        with pytest.raises(RunnerRefusal, match="not restored"):
-            restarted.run(uptrend_history, through=days[25])
-        assert warehouse.con.execute("SELECT * FROM paper_sessions ORDER BY session_date").fetchall() == before
+        resumed = restarted.run(uptrend_history, through=days[25])
+        assert resumed.restored_sessions == 21
+        assert resumed.sessions == 5
+        assert restarted.broker.portfolio().quantity_of("UP") > 0
+        assert restarted.broker.portfolio().cash < original.broker.starting_cash
         continued = original.run(uptrend_history, through=days[25])
-        assert continued.sessions == 5
-        assert continued.first_session == days[21]
+        assert continued.sessions == 0
+        assert continued.first_session is None
+        assert restarted.broker.statements == original.broker.statements
     finally:
         warehouse.close()
 

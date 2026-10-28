@@ -25,13 +25,14 @@ from tests.conftest import business_days, make_bar
 D = Decimal
 
 
-def _runner(warehouse, symbol, spec):
+def _runner(warehouse, symbol, spec, history):
     return PaperRunner(
         warehouse=warehouse,
         research=ResearchConfig(starting_cash=D("100000"), universe=(symbol,)),
         risk=RiskConfig(),
         override_strategy=spec,
         override_reason="golden",
+        start=history.trading_days[0],
     )
 
 
@@ -55,7 +56,7 @@ class TestNasdaqcomPaperPathIsFrozen:
                          "target_weight": D("0.05"), "symbols": ("NASDAQCOM",)})
 
     def test_final_equity_ledger_head_and_fills(self, warehouse, nasdaq_history):
-        r = _runner(warehouse, "NASDAQCOM", self.SPEC)
+        r = _runner(warehouse, "NASDAQCOM", self.SPEC, nasdaq_history)
         result = r.run(nasdaq_history, through=date(1988, 12, 31))
         portfolio = r.broker.portfolio()
         head = r.broker.ledger.head()
@@ -89,7 +90,7 @@ class TestFixturePaperPathIsFrozen:
         history = PriceHistory.from_bars(
             [make_bar("AAA", d, D(100 + i), volume=10_000_000) for i, d in enumerate(self.DAYS)]
         )
-        r = _runner(warehouse, "AAA", self.SPEC)
+        r = _runner(warehouse, "AAA", self.SPEC, history)
         r.run(history, through=self.DAYS[40])
         head = r.broker.ledger.head()
         statement = r.broker.statements[-1]

@@ -68,6 +68,7 @@ def split(day=SPLIT_DAY, ratio="2") -> CorporateAction:
 def runner(warehouse, **kw) -> PaperRunner:
     kw.setdefault("override_strategy", SPEC)
     kw.setdefault("override_reason", "test")
+    kw.setdefault("start", DAYS[0])
     return PaperRunner(
         warehouse=warehouse,
         research=ResearchConfig(starting_cash=D("100000"), universe=("AAA",)),
@@ -172,14 +173,15 @@ class TestBookIdentity:
         assert count(warehouse, "paper_sessions", "WHERE book_id = 'ohlcv:AAA'") == 6
         assert b.last_completed_session(h) == DAYS[5]
 
-    def test_a_book_cannot_be_resumed_by_a_fresh_runner_but_another_book_is_unaffected(
+    def test_a_fresh_runner_restores_its_own_book_and_another_book_is_unaffected(
         self, warehouse
     ):
         h = history(split_at=None)
         runner(warehouse, book_id="one").run(h, through=DAYS[5])
-        with pytest.raises(RunnerRefusal, match="not restored"):
-            runner(warehouse, book_id="one").run(h, through=DAYS[8])
-        assert runner(warehouse, book_id="two").run(h, through=DAYS[8]).sessions == 9
+        resumed = runner(warehouse, book_id="one").run(h, through=DAYS[8])
+        assert (resumed.sessions, resumed.restored_sessions) == (3, 6)
+        other = runner(warehouse, book_id="two").run(h, through=DAYS[8])
+        assert (other.sessions, other.restored_sessions) == (9, 0)
 
 
 class TestActionsReachTheBroker:

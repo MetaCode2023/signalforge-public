@@ -53,6 +53,7 @@ def history() -> PriceHistory:
 
 
 def runner(warehouse, **kw) -> PaperRunner:
+    kw.setdefault("start", DAYS[0])
     return PaperRunner(
         warehouse=warehouse,
         research=ResearchConfig(starting_cash=D("100000"), universe=("AAA",)),
@@ -154,13 +155,16 @@ class TestItResumesWithoutReplaying:
             "re-running a completed range would double-count every fill"
         )
 
-    def test_restart_cannot_extend_without_restoring_the_book(self, warehouse, history):
+    def test_a_restart_restores_the_book_and_extends_it(self, warehouse, history):
         r1 = runner(warehouse, override_strategy=SPEC, override_reason="test")
         r1.run(history, through=DAYS[20])
         r2 = runner(warehouse, override_strategy=SPEC, override_reason="test")
-        with pytest.raises(RunnerRefusal, match="not restored"):
-            r2.run(history, through=DAYS[25])
-        assert warehouse.con.execute("SELECT count(*) FROM paper_sessions").fetchall()[0][0] == 21
+        result = r2.run(history, through=DAYS[25])
+        assert result.sessions == 5
+        assert result.restored_sessions == 21
+        assert result.first_session == DAYS[21]
+        assert len(r2.broker.statements) == 26
+        assert warehouse.con.execute("SELECT count(*) FROM paper_sessions").fetchall()[0][0] == 26
 
     def test_a_resumed_run_reports_where_it_started(self, warehouse, history):
         r1 = runner(warehouse, override_strategy=SPEC, override_reason="test")

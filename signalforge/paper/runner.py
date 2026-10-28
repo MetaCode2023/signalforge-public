@@ -10,11 +10,12 @@ layer out. The runner starts only if the warehouse records an APPROVED active
 strategy, or the operator passes an explicit override with a reason, which is
 then recorded in both the ledger and the warehouse.
 
-**It resumes without replaying.** A restart that re-ran yesterday's sessions
-would double-count every fill, so completed sessions are persisted and a
-second run over the same range does nothing. A new runner cannot advance to
-new sessions until the book/ledger is restored; the current implementation
-fails closed rather than treating persisted progress as a fresh cash account.
+**It never rewrites a session.** A restart that re-ran yesterday's sessions
+would double-count every fill, so completed sessions are persisted and never
+written twice. A new runner restores the book by replaying the persisted
+sessions in memory and verifying each against the digest and figures stored
+when it was traded; any difference refuses the run and writes nothing, rather
+than treating persisted progress as a fresh cash account.
 
 Still PAPER ONLY. This module imports nothing that can open a socket; the
 structural tests in tests/test_paper_broker.py cover it along with the rest
@@ -74,7 +75,15 @@ CREATE TABLE IF NOT EXISTS paper_sessions (
     position_count BIGINT,
     fills BIGINT,
     completed_at TIMESTAMP,
+    parameters VARCHAR,
+    paused_reason VARCHAR,
+    state_digest VARCHAR,
     PRIMARY KEY (book_id, session_date)
+);
+CREATE TABLE IF NOT EXISTS paper_books (
+    book_id VARCHAR PRIMARY KEY,
+    first_session DATE NOT NULL,
+    created_at TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS paper_corporate_actions (
     book_id VARCHAR NOT NULL,
@@ -135,6 +144,9 @@ def ensure_schema(con) -> None:
     if approvals and "book_id" not in approvals:
         con.execute("ALTER TABLE active_strategy ADD COLUMN book_id VARCHAR DEFAULT 'series:NASDAQCOM'")
     con.execute(SCHEMA)
+    con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS parameters VARCHAR")
+    con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS paused_reason VARCHAR")
+    con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS state_digest VARCHAR")
 
 
 class RunnerRefusal(SignalForgeError):
@@ -159,6 +171,8 @@ class RunResult:
     `compute_metrics` renders a page saying 0.00% rather than one saying
     nothing happened.
     """
+    book_start: date | None = None
+    restored_sessions: int = 0
 
 
 PAPER_NOTE = (
@@ -272,6 +286,7 @@ class PaperRunner:
         corporate_actions=None,
         raw_basis: bool = False,
         corporate_action_source: str | None = None,
+        start: date | None = None,
     ) -> None:
         self.warehouse = warehouse
         ensure_schema(self.warehouse.con)
@@ -281,6 +296,7 @@ class PaperRunner:
         )
         self.raw_basis = raw_basis
         self.corporate_action_source = corporate_action_source
+        self.start = start
         self.research = research
         self.risk = risk
         self.override_strategy = override_strategy
@@ -288,14 +304,20 @@ class PaperRunner:
         self.broker = PaperBroker(research, risk)
         self._paused_reason = ""
         self._last_persisted_session: date | None = None
+        self._session_params: str | None = None
+        self._resume_requested = False
+        self._start: date | None = None
 
     # ------------------------------------------------------------------
     def pause(self, reason: str) -> None:
         self._paused_reason = reason
+        self._resume_requested = False
         self.broker.pause(reason)
 
     def resume(self) -> None:
+        """Lift a pause, including one carried over from a previous process."""
         self._paused_reason = ""
+        self._resume_requested = True
         self.broker.resume()
 
     # ------------------------------------------------------------------
@@ -340,12 +362,66 @@ class PaperRunner:
         ).fetchall()
         return rows[0][0] if rows and rows[0][0] is not None else None
 
-    def _due_sessions(self, history: PriceHistory, through: date) -> list[date]:
+    def book_start(self) -> date | None:
+        """The book's recorded first session, or None for a book with none."""
+        con = self.warehouse.con
+        rows = con.execute(
+            "SELECT first_session FROM paper_books WHERE book_id = ?", [self.book_id]
+        ).fetchall()
+        if rows:
+            return rows[0][0]
+        return con.execute(
+            "SELECT min(session_date) FROM paper_sessions WHERE book_id = ?", [self.book_id]
+        ).fetchall()[0][0]
+
+    def resolve_start(self, history: PriceHistory, through: date) -> date:
+        """The first session of this book, or refuse.
+
+        A book's start is chosen once by the operator and recorded with its
+        first session. Replaying all of history is never the default.
+        """
+        recorded = self.book_start()
+        if recorded is not None:
+            if self.start is not None and self.start != recorded:
+                raise RunnerRefusal(
+                    f"book {self.book_id} started on {recorded}; --start {self.start} "
+                    "differs. A book's first session is fixed once it has traded, so "
+                    "start a fresh book to begin on another date."
+                )
+            return recorded
+        if self.start is None:
+            raise RunnerRefusal(
+                f"book {self.book_id} has no sessions and no start date. Pass --start "
+                "YYYY-MM-DD to choose its first session; bars before it are indicator "
+                "warm-up only. Replaying the full history is never the default."
+            )
+        days = history.trading_days
+        if not days or self.start > days[-1]:
+            last = days[-1] if days else "n/a"
+            raise RunnerRefusal(
+                f"--start {self.start} is after the last bar {last}, so the book would "
+                "have nothing to trade."
+            )
+        if self.start not in set(days):
+            following = history.next_trading_day(self.start)
+            raise RunnerRefusal(
+                f"--start {self.start} is not a trading day in the history; "
+                f"the next trading day is {following}."
+            )
+        if self.start > through:
+            raise RunnerRefusal(
+                f"--start {self.start} is after --through {through}, so no session is due."
+            )
+        return self.start
+
+    def _due_sessions(
+        self, history: PriceHistory, through: date, start: date
+    ) -> list[date]:
         done = self.last_completed_session(history)
         return [
             d
             for d in history.trading_days
-            if d <= through and (done is None or d > done)
+            if start <= d <= through and (done is None or d > done)
         ]
 
     # ------------------------------------------------------------------
@@ -353,21 +429,28 @@ class PaperRunner:
         strategy_id, params, source, detail = self._resolve_strategy()
         strategy = build(strategy_id, **self._coerce(params))
 
-        days = self._due_sessions(history, through)
+        creating = self.book_start() is None
+        start = self.resolve_start(history, through)
+        days = self._due_sessions(history, through, start)
         completed = self.last_completed_session(history)
-        if days and completed is not None and completed != self._last_persisted_session:
-            raise RunnerRefusal(
-                "persisted sessions exist but the broker book was not restored; "
-                "refusing to continue from a fresh cash balance. Keep the current "
-                "runner or implement verified book/ledger restoration before restart."
-            )
         actions = self._actions_for(history)
         if self.raw_basis or self.corporate_actions is not None:
             self._refuse_late_actions(history, actions)
             self._refuse_non_trading_day_actions(history, days, through, actions)
             self._refuse_inconsistent_splits(history, days, actions)
             self._refuse_unrecorded_jumps(history, days, actions)
+        restored = 0
+        if completed is not None and completed != self._last_persisted_session:
+            restored = self._restore(history, actions, start, completed)
         notes: list[str] = []
+        if creating and days:
+            visible = sum(1 for d in history.trading_days if d <= start)
+            if visible < strategy.warmup_days:
+                notes.append(
+                    f"WARM-UP SHORT: only {visible} trading days are visible at {start} "
+                    f"and {strategy_id} needs {strategy.warmup_days}, so it will not "
+                    "signal until enough history has accrued."
+                )
         if source == "override":
             notes.append(
                 f"UNAPPROVED STRATEGY running on an explicit override: {detail}"
@@ -382,23 +465,25 @@ class PaperRunner:
                     "detail": "running an UNAPPROVED strategy on operator override",
                 },
             )
-        if self._paused_reason:
-            notes.append(f"paused: {self._paused_reason}")
+        if self.broker.paused:
+            notes.append(f"paused: {self.broker.pause_reason}")
 
         book = "" if self.book_id == DEFAULT_BOOK_ID else f"{self.book_id}:"
         run_id = f"paper:{book}{strategy_id}:{through.isoformat()}"
-        for day in days:
-            view = history.view(day)
-            ledger_start = len(self.broker.ledger)
-            self.broker.open_session(
-                day,
-                view,
-                [a for a in actions if a.effective_date == day] or None,
-            )
-            self.broker.settle(day, view)
-            self._submit_signals(strategy, day, view)
-            statement = self.broker.close_session(day, view)
-            self._record_session(day, strategy_id, statement, ledger_start)
+        self._session_params = json.dumps(params, sort_keys=True, default=str)
+        self._start = start
+        try:
+            for day in days:
+                statement, ledger_start = self._drive_session(strategy, day, history, actions)
+                self._record_session(day, strategy_id, statement, ledger_start)
+        except BaseException:
+            # The broker may be ahead of what was persisted. Drop it so the
+            # next run restores from the stored sessions by verified replay.
+            self.broker = PaperBroker(self.research, self.risk)
+            if self._paused_reason:
+                self.broker.pause(self._paused_reason)
+            self._last_persisted_session = None
+            raise
 
         self.warehouse.con.execute(
             "INSERT INTO paper_runs (run_id, strategy_id, approval_source, "
@@ -425,6 +510,8 @@ class PaperRunner:
             first_session=days[0] if days else None,
             last_session=days[-1] if days else None,
             notes=tuple(notes),
+            book_start=start,
+            restored_sessions=restored,
             result=paper_result(
                 self.broker,
                 strategy_id=strategy_id,
@@ -437,6 +524,165 @@ class PaperRunner:
                 ) if days else "",
             ) if days else None,
         )
+
+    # ------------------------------------------------------------------
+    def _drive_session(
+        self, strategy, day: date, history: PriceHistory, actions: list[CorporateAction]
+    ):
+        view = history.view(day)
+        ledger_start = len(self.broker.ledger)
+        self.broker.open_session(
+            day,
+            view,
+            [a for a in actions if a.effective_date == day] or None,
+        )
+        self.broker.settle(day, view)
+        self._submit_signals(strategy, day, view)
+        statement = self.broker.close_session(day, view)
+        return statement, ledger_start
+
+    # ------------------------------------------------------------------
+    def _restore(
+        self,
+        history: PriceHistory,
+        actions: list[CorporateAction],
+        start: date,
+        completed: date,
+    ) -> int:
+        """Rebuild the broker by replaying the persisted sessions in memory.
+
+        Each replayed session is checked against what was stored when it was
+        traded, so a restored book is proven equal rather than assumed. Replay
+        writes nothing; any difference raises RunnerRefusal.
+        """
+        con = self.warehouse.con
+        rows = con.execute(
+            "SELECT session_date, strategy_id, parameters, paused_reason, equity, cash, "
+            "gross_exposure, position_count, fills, state_digest FROM paper_sessions "
+            "WHERE book_id = ? ORDER BY session_date",
+            [self.book_id],
+        ).fetchall()
+        prefix = "persisted sessions exist but the broker book was not restored: "
+        unverifiable = [r[0] for r in rows if r[2] is None or r[9] is None]
+        if unverifiable:
+            raise RunnerRefusal(
+                f"{prefix}{len(unverifiable)} session(s) of {self.book_id}, from "
+                f"{unverifiable[0]}, were stored without parameters or a state digest, "
+                "so they cannot be verified by replay. Nothing was written; start a "
+                "fresh book."
+            )
+        persisted = [r[0] for r in rows]
+        expected = [d for d in history.trading_days if start <= d <= completed]
+        if persisted != expected:
+            at = next(
+                (i for i, (a, b) in enumerate(zip(persisted, expected)) if a != b),
+                min(len(persisted), len(expected)),
+            )
+            have = persisted[at] if at < len(persisted) else "nothing"
+            want = expected[at] if at < len(expected) else "nothing"
+            raise RunnerRefusal(
+                f"{prefix}the persisted sessions of {self.book_id} are not the trading "
+                f"days from {start} to {completed}; first difference at position {at}: "
+                f"persisted {have}, history {want}. Nothing was written; restore the "
+                "data it traded on or start a fresh book."
+            )
+        live = self.broker
+        self.broker = PaperBroker(self.research, self.risk)
+        try:
+            strategies: dict[tuple[str, str], object] = {}
+            for row in rows:
+                day, strategy_id, parameters, paused_reason = row[0], row[1], row[2], row[3]
+                key = (strategy_id, parameters)
+                if key not in strategies:
+                    strategies[key] = build(
+                        strategy_id, **self._coerce(json.loads(parameters))
+                    )
+                self._replay_pause(paused_reason, day)
+                statement, ledger_start = self._drive_session(
+                    strategies[key], day, history, actions
+                )
+                self._verify_replayed(row, statement, ledger_start)
+            booked = sum(
+                1 for e in self.broker.ledger.events
+                if e.event_type is EventType.CORPORATE_ACTION
+            )
+            audited = con.execute(
+                "SELECT count(*) FROM paper_corporate_actions WHERE book_id = ?",
+                [self.book_id],
+            ).fetchall()[0][0]
+            if audited != booked:
+                self._refuse_replay(completed, "corporate action rows", booked, audited)
+            # A pause carried in the persisted sessions holds until an explicit
+            # resume; only a pause or resume given to this runner overrides it.
+            if self._paused_reason or self._resume_requested:
+                self._replay_pause(self._paused_reason, completed)
+        except BaseException:
+            self.broker = live
+            raise
+        self._last_persisted_session = completed
+        return len(rows)
+
+    def _replay_pause(self, reason: str, day: date) -> None:
+        if reason:
+            if not (self.broker.paused and self.broker.pause_reason == reason):
+                self.broker.pause(reason, day=day)
+        elif self.broker.paused:
+            self.broker.resume(day=day)
+
+    def _refuse_replay(self, day: date, field: str, replayed, stored) -> None:
+        raise RunnerRefusal(
+            "persisted sessions exist but the broker book was not restored: replaying "
+            f"{self.book_id} session {day} gives {field} {replayed}, persisted {stored}. "
+            "Bars, corporate actions, configuration or code changed since it was traded. "
+            "Nothing was written; restore the data it traded on or start a fresh book."
+        )
+
+    def _verify_replayed(self, row, statement, ledger_start: int) -> None:
+        day, _, _, _, equity, cash, gross, positions, fills, digest = row
+        con = self.warehouse.con
+
+        def stored_form(value, kind: str):
+            return con.execute(f"SELECT CAST(? AS {kind})", [str(value)]).fetchall()[0][0]
+
+        replayed_digest = self.broker.state_digest()
+        if replayed_digest != digest:
+            self._refuse_replay(day, "state digest", replayed_digest[:12], digest[:12])
+        for field, value, stored in (
+            ("equity", statement.equity, equity),
+            ("cash", statement.cash, cash),
+            ("gross exposure", statement.gross_exposure, gross),
+        ):
+            if stored_form(value, "DECIMAL(18,6)") != stored:
+                self._refuse_replay(day, field, value, stored)
+        if len(statement.positions) != positions:
+            self._refuse_replay(day, "position count", len(statement.positions), positions)
+        if len(statement.fills) != fills:
+            self._refuse_replay(day, "fill count", len(statement.fills), fills)
+        replayed_actions = {
+            e.payload["action_id"]: (
+                e.payload["shares_before"],
+                e.payload["shares_after"],
+                stored_form(format(e.payload["cash_delta"], "f"), "DECIMAL(18,2)"),
+            )
+            for e in self.broker.ledger.events[ledger_start:]
+            if e.event_type is EventType.CORPORATE_ACTION
+        }
+        audit = {
+            r[0]: (r[1], r[2], r[3])
+            for r in con.execute(
+                "SELECT action_id, shares_before, shares_after, cash_delta "
+                "FROM paper_corporate_actions WHERE book_id = ? AND session_date = ?",
+                [self.book_id, day],
+            ).fetchall()
+        }
+        for action_id in sorted(set(replayed_actions) | set(audit)):
+            if replayed_actions.get(action_id) != audit.get(action_id):
+                self._refuse_replay(
+                    day,
+                    f"corporate action {action_id}",
+                    replayed_actions.get(action_id),
+                    audit.get(action_id),
+                )
 
     # ------------------------------------------------------------------
     def _submit_signals(self, strategy, day: date, view) -> None:
@@ -495,8 +741,9 @@ class PaperRunner:
         try:
             con.execute(
                 "INSERT OR REPLACE INTO paper_sessions (book_id, session_date, strategy_id, "
-                "equity, cash, gross_exposure, position_count, fills, completed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "equity, cash, gross_exposure, position_count, fills, completed_at, "
+                "parameters, paused_reason, state_digest) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     self.book_id,
                     day,
@@ -507,6 +754,9 @@ class PaperRunner:
                     len(statement.positions),
                     len(statement.fills),
                     datetime.now(),
+                    self._session_params,
+                    self.broker.pause_reason if self.broker.paused else "",
+                    self.broker.state_digest(),
                 ],
             )
             for event in self.broker.ledger.events[ledger_start:]:
@@ -533,6 +783,11 @@ class PaperRunner:
                         datetime.now(),
                     ],
                 )
+            con.execute(
+                "INSERT OR IGNORE INTO paper_books (book_id, first_session, created_at) "
+                "VALUES (?, ?, ?)",
+                [self.book_id, self._start or day, datetime.now()],
+            )
             con.execute("COMMIT")
         except BaseException:
             con.execute("ROLLBACK")

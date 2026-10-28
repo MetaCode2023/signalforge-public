@@ -1,7 +1,7 @@
 """Drive paper trading from the command line.
 
-    python -m signalforge.paper_cli --through 2026-10-23
-    python -m signalforge.paper_cli --through 2026-10-23 \
+    python -m signalforge.paper_cli --start 2026-01-02 --through 2026-10-23
+    python -m signalforge.paper_cli --start 2026-01-02 --through 2026-10-23 \
         --override-strategy ma_trend --override-reason "operator dry run"
     python -m signalforge.paper_cli --approve ma_trend --approved-by austin \
         --reason "approved for paper trading"
@@ -74,12 +74,23 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--source", default="tiingo")
     p.add_argument("--benchmark", default="SPY", help="its bar dates are the trading calendar")
     p.add_argument("--through", type=str, default=None, help="YYYY-MM-DD")
+    p.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="YYYY-MM-DD first session of a new book; bars before it are warm-up only",
+    )
     p.add_argument("--override-strategy", default=None)
     p.add_argument("--override-reason", default="")
     p.add_argument("--approve", default=None, help="record an approved strategy and exit")
     p.add_argument("--approved-by", default="")
     p.add_argument("--reason", default="")
     p.add_argument("--pause", default=None, help="pause before running, with a reason")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="lift a pause; a pause otherwise holds across runs",
+    )
     return p.parse_args(argv)
 
 
@@ -92,6 +103,18 @@ def main(argv=None) -> int:
     if not args.db.exists():
         print(f"no warehouse at {args.db}; run the archive ingestion first")
         return 2
+
+    if args.pause and args.resume:
+        print("--pause and --resume cannot be given together")
+        return 2
+
+    start = None
+    if args.start:
+        try:
+            start = date.fromisoformat(args.start)
+        except ValueError:
+            print(f"--start must be a YYYY-MM-DD date, got {args.start!r}")
+            return 2
 
     ohlcv = args.symbols is not None or args.universe
     symbols = None
@@ -156,6 +179,7 @@ def main(argv=None) -> int:
             risk=config.risk,
             override_strategy=override,
             override_reason=args.override_reason,
+            start=start,
             **(
                 {"book_id": book_id, "raw_basis": True, "corporate_action_source": args.source}
                 if ohlcv
@@ -164,6 +188,8 @@ def main(argv=None) -> int:
         )
         if args.pause:
             runner.pause(args.pause)
+        if args.resume:
+            runner.resume()
 
         if ohlcv:
             approved = warehouse.con.execute(
@@ -188,12 +214,14 @@ def main(argv=None) -> int:
                 for b in warehouse.load_bars(symbols=[args.benchmark], source=args.source)
             ]
             done = runner.last_completed_session(bundle.history)
-            problems, warnings = check_freshness(
-                calendar,
-                {s: [b.trade_date for b in bundle.history.bars_for(s)] for s in symbols},
-                through,
-                None if done is None else done + timedelta(days=1),
-            )
+            problems, warnings = [], []
+            if done is not None or start is not None:
+                problems, warnings = check_freshness(
+                    calendar,
+                    {s: [b.trade_date for b in bundle.history.bars_for(s)] for s in symbols},
+                    through,
+                    start if done is None else done + timedelta(days=1),
+                )
             if problems:
                 print("REFUSED TO RUN")
                 print()
@@ -223,6 +251,12 @@ def main(argv=None) -> int:
 
         print(f"strategy        {result.strategy_id}")
         print(f"approval        {result.approval_source}")
+        print(f"book start      {result.book_start}")
+        if result.restored_sessions:
+            print(
+                f"restored        {result.restored_sessions} persisted sessions, "
+                "replayed and verified"
+            )
         print(f"sessions run    {result.sessions}")
         if result.sessions:
             print(f"window          {result.first_session} .. {result.last_session}")

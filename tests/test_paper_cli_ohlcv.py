@@ -24,8 +24,11 @@ DAYS = business_days(date(2020, 1, 1), 40)
 SERIES_DAYS = business_days(date(2020, 1, 1), 300)
 
 DEFAULT_GOLDEN = (
-    'strategy        ma_trend\napproval        override\nsessions run    300\n'
+    'strategy        ma_trend\napproval        override\nbook start      2020-01-01\n'
+    'sessions run    300\n'
     'window          2020-01-01 .. 2021-02-23\n'
+    'NOTE: WARM-UP SHORT: only 1 trading days are visible at 2020-01-01 and ma_trend '
+    'needs 200, so it will not signal until enough history has accrued.\n'
     'NOTE: UNAPPROVED STRATEGY running on an explicit override: golden\n\n'
     'SIMULATED BOOK (no real capital, no real orders)\n'
     '  equity          101,580.60\n  cash            95,196.60\n  positions       1\n'
@@ -86,7 +89,8 @@ def run(db, *extra):
     return paper_cli.main(["--db", str(db), *extra])
 
 
-OVERRIDE = ("--override-strategy", "buy_and_hold", "--override-reason", "test run")
+OVERRIDE_NO_START = ("--override-strategy", "buy_and_hold", "--override-reason", "test run")
+OVERRIDE = (*OVERRIDE_NO_START, "--start", DAYS[0].isoformat())
 
 
 class TestParser:
@@ -121,9 +125,82 @@ class TestDefaultPathIsUntouched:
             for i, d in enumerate(SERIES_DAYS)
         ])
         w.close()
-        rc = run(path, "--override-strategy", "ma_trend", "--override-reason", "golden")
+        rc = run(path, "--override-strategy", "ma_trend", "--override-reason", "golden",
+                 "--start", SERIES_DAYS[0].isoformat())
         assert rc == 0
         assert capsys.readouterr().out == DEFAULT_GOLDEN
+
+
+class TestBookStart:
+    def test_start_is_parsed(self):
+        assert paper_cli.parse_args(["--start", "2020-02-12"]).start == "2020-02-12"
+        assert paper_cli.parse_args([]).start is None
+
+    def test_an_invalid_start_exits_2(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", "not-a-date") == 2
+        assert "--start" in capsys.readouterr().out
+
+    def test_a_new_book_without_start_is_refused_with_exit_3(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START) == 3
+        out = capsys.readouterr().out
+        assert "REFUSED TO RUN" in out and "--start YYYY-MM-DD" in out
+        assert "WARNING" not in out and "sessions run" not in out
+        w = Warehouse(str(db))
+        try:
+            assert w.con.execute("SELECT count(*) FROM paper_sessions").fetchall()[0][0] == 0
+        finally:
+            w.close()
+
+    def test_the_output_shows_the_book_start(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", str(DAYS[30])) == 0
+        out = capsys.readouterr().out
+        assert f"book start      {DAYS[30]}\n" in out
+        assert "restored" not in out
+
+    def test_a_second_days_run_continues_the_book(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", str(DAYS[30]),
+                   "--through", str(DAYS[35])) == 0
+        assert "sessions run    6" in capsys.readouterr().out
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START) == 0
+        out = capsys.readouterr().out
+        assert "sessions run    4" in out
+        assert "restored        6 persisted sessions, replayed and verified" in out
+        assert f"book start      {DAYS[30]}" in out
+        w = Warehouse(str(db))
+        try:
+            assert w.con.execute("SELECT count(*) FROM paper_sessions").fetchall()[0][0] == 10
+        finally:
+            w.close()
+
+    def test_a_pause_sticks_across_runs_until_resume(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", str(DAYS[30]),
+                   "--through", str(DAYS[32]), "--pause", "bad bars") == 0
+        capsys.readouterr()
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--through", str(DAYS[34])) == 0
+        assert "paused          True" in capsys.readouterr().out
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--resume") == 0
+        assert "paused          False" in capsys.readouterr().out
+
+    def test_pause_and_resume_together_exit_2(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE, "--pause", "x", "--resume") == 2
+
+    def test_a_different_start_on_an_existing_book_exits_3(self, db, capsys):
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", str(DAYS[30]),
+                   "--through", str(DAYS[35])) == 0
+        capsys.readouterr()
+        assert run(db, "--symbols", "AAA", *OVERRIDE_NO_START, "--start", str(DAYS[31])) == 3
+        out = capsys.readouterr().out
+        assert "REFUSED TO RUN" in out and str(DAYS[30]) in out
+
+    def test_the_freshness_window_starts_at_the_book_start(self, tmp_path, capsys):
+        path = tmp_path / "window.duckdb"
+        w = Warehouse(str(path))
+        w.upsert_bars(bars_for("AAA") + bars_for("BBB", skip=(15,)) + bars_for("SPY"))
+        w.close()
+        assert run(path, "--symbols", "AAA,BBB", *OVERRIDE_NO_START, "--start", str(DAYS[10])) == 3
+        capsys.readouterr()
+        assert run(path, "--symbols", "AAA,BBB", *OVERRIDE_NO_START, "--start", str(DAYS[20])) == 0
+        assert "WARNING" not in capsys.readouterr().out
 
 
 class TestOhlcvBook:
@@ -275,7 +352,7 @@ class TestUniverseDrift:
         approve = ("--approve", "buy_and_hold", "--approved-by", "austin", "--reason", "ok")
         self.patch_universe(monkeypatch, ("AAA", "BBB"))
         assert run(db, "--universe", *approve) == 0
-        assert run(db, "--universe") == 0
+        assert run(db, "--universe", "--start", DAYS[0].isoformat()) == 0
         capsys.readouterr()
         self.patch_universe(monkeypatch, ("AAA", "BBB", "SPY"))
         assert run(db, "--universe") == 2
@@ -294,7 +371,7 @@ class TestUniverseDrift:
         ])
         w.close()
         assert run(path, "--approve", "buy_and_hold", "--approved-by", "a", "--reason", "r") == 0
-        assert run(path) == 0
+        assert run(path, "--start", DAYS[0].isoformat()) == 0
 
 
 class TestBookScopedApproval:
@@ -310,7 +387,7 @@ class TestBookScopedApproval:
     def test_an_ohlcv_approval_authorises_that_book(self, db, capsys):
         assert run(db, "--symbols", "AAA", "--approve", "buy_and_hold", *self.APPROVE) == 0
         capsys.readouterr()
-        assert run(db, "--symbols", "AAA") == 0
+        assert run(db, "--symbols", "AAA", "--start", DAYS[0].isoformat()) == 0
         assert "approval        promotion" in capsys.readouterr().out
 
     def test_an_approval_for_one_symbol_set_does_not_cover_another(self, db, capsys):
@@ -367,4 +444,4 @@ class TestRecordActiveStrategyBookScope:
             for i, d in enumerate(DAYS)
         ])
         w.close()
-        assert paper_cli.main(["--db", str(path)]) == 0
+        assert paper_cli.main(["--db", str(path), "--start", DAYS[0].isoformat()]) == 0

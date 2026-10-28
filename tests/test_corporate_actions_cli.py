@@ -262,6 +262,7 @@ class TestDraftSkips:
                 override_reason="agreement test",
                 raw_basis=True,
                 corporate_action_source="tiingo",
+                start=DAYS[0],
             )
             history = ohlcv_history(warehouse, ["AAA"], sources=["tiingo"], price_basis="raw").history
             try:

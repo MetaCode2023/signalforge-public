@@ -508,3 +508,86 @@ class TestStatus:
         b.submit(propose(b, DAYS[2]))
         assert b.risk_events
         assert b.risk_events[0].action is RiskAction.REJECT
+
+
+def drive(b: PaperBroker, history, days, submit_on=None):
+    for day in days:
+        view = history.view(day)
+        b.open_session(day, view)
+        b.settle(day, view)
+        if day == submit_on:
+            b.submit(propose(b, day))
+        b.close_session(day, view)
+
+
+class TestStateDigest:
+    def test_state_digest_is_identical_for_identical_sessions(self, history):
+        a, b = broker(), broker()
+        drive(a, history, DAYS[:6], submit_on=DAYS[2])
+        drive(b, history, DAYS[:6], submit_on=DAYS[2])
+        assert a.state_digest() == b.state_digest()
+        assert len(a.state_digest()) == 64
+
+    def test_state_digest_changes_with_a_pending_order(self, history):
+        a, b = broker(), broker()
+        drive(a, history, DAYS[:3], submit_on=DAYS[2])
+        drive(b, history, DAYS[:3])
+        assert a.pending_count == 1 and b.pending_count == 0
+        assert a.state_digest() != b.state_digest()
+
+    def test_state_digest_changes_with_the_book(self, history):
+        a, b = broker(), broker()
+        drive(a, history, DAYS[:6], submit_on=DAYS[2])
+        drive(b, history, DAYS[:6])
+        assert a.state_digest() != b.state_digest()
+
+    def test_state_digest_changes_with_pause(self, history):
+        a, b = broker(), broker()
+        drive(a, history, DAYS[:3])
+        drive(b, history, DAYS[:3])
+        b.pause("halted", day=DAYS[2])
+        assert a.state_digest() != b.state_digest()
+        b.resume(day=DAYS[2])
+        assert a.state_digest() == b.state_digest()
+
+    def test_state_digest_ignores_marks_of_unheld_symbols(self, history):
+        both = PriceHistory.from_bars(
+            [make_bar("AAPL", d, D(100 + i), volume=10_000_000) for i, d in enumerate(DAYS)]
+            + [make_bar("MSFT", d, D(50 + i), volume=10_000_000) for i, d in enumerate(DAYS)]
+        )
+        a, b = broker(), broker()
+        drive(a, history, DAYS[:6], submit_on=DAYS[2])
+        drive(b, both, DAYS[:6], submit_on=DAYS[2])
+        assert "MSFT" in b._previous_marks and "MSFT" not in a._previous_marks
+        assert a.state_digest() == b.state_digest()
+
+    def test_state_digest_ignores_the_order_reason_text(self, history):
+        a, b = broker(), broker()
+        for broker_, reason in ((a, "first wording"), (b, "second wording")):
+            day = DAYS[2]
+            broker_.open_session(day, history.view(day))
+            broker_.submit(propose(broker_, day, reason=reason))
+            broker_.close_session(day, history.view(day))
+        assert a.state_digest() == b.state_digest()
+
+
+class TestOperatorControlsForReplay:
+    def test_pause_and_resume_accept_a_session_day(self):
+        b = broker()
+        b.pause("halted", day=DAYS[3])
+        b.resume(day=DAYS[4])
+        events = [e for e in b.ledger.events if e.event_type in (EventType.PAUSED, EventType.RESUMED)]
+        assert [e.event_date for e in events] == [DAYS[3], DAYS[4]]
+
+    def test_pause_without_a_day_still_defaults_to_today(self):
+        b = broker()
+        b.pause("halted")
+        assert b.ledger.events[-1].event_date == date.today()
+
+    def test_paused_and_pause_reason_properties(self):
+        b = broker()
+        assert b.paused is False and b.pause_reason == ""
+        b.pause("maintenance")
+        assert b.paused is True and b.pause_reason == "maintenance"
+        b.resume()
+        assert b.paused is False and b.pause_reason == ""

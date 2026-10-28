@@ -19,6 +19,8 @@ fill expires rather than lingering to surprise someone later.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Sequence
@@ -39,7 +41,7 @@ from signalforge.core.types import (
     Side,
 )
 from signalforge.paper.corporate_actions import apply_corporate_action
-from signalforge.paper.ledger import EventType, TradeLedger
+from signalforge.paper.ledger import EventType, TradeLedger, _canonical
 from signalforge.paper.statements import Statement
 from signalforge.risk.engine import Reservations, RiskEngine
 from signalforge.risk.state import RiskState
@@ -502,17 +504,73 @@ class PaperBroker:
     # ------------------------------------------------------------------
     # operator controls
     # ------------------------------------------------------------------
-    def pause(self, reason: str) -> None:
+    def pause(self, reason: str, day: date | None = None) -> None:
         self._state.paused = True
         self._state.pause_reason = reason
         self._ledger.append(
-            EventType.PAUSED, self._session_day or date.today(), {"reason": reason}
+            EventType.PAUSED, day or self._session_day or date.today(), {"reason": reason}
         )
 
-    def resume(self) -> None:
+    def resume(self, day: date | None = None) -> None:
         self._state.paused = False
         self._state.pause_reason = ""
-        self._ledger.append(EventType.RESUMED, self._session_day or date.today(), {})
+        self._ledger.append(
+            EventType.RESUMED, day or self._session_day or date.today(), {}
+        )
+
+    @property
+    def paused(self) -> bool:
+        return self._state.paused
+
+    @property
+    def pause_reason(self) -> str:
+        return self._state.pause_reason
+
+    def state_digest(self) -> str:
+        """A hash of everything that decides the next session's behaviour.
+
+        Two brokers with the same digest trade identically from here on. The
+        runner stores it per session and compares it to a replay, so a
+        restored book is proven rather than assumed. Order reason text is
+        excluded: it is commentary, not state.
+        """
+        portfolio = self._portfolio
+        state = self._state
+        pending = [
+            [index, o.order_id, o.symbol, o.side, o.quantity, o.order_type, o.limit_price]
+            for index, o in self._pending
+        ]
+        relevant = set(portfolio.positions) | {o.symbol for _, o in self._pending}
+        body = {
+            "cash": portfolio.cash,
+            "closed_realized_pnl": portfolio.closed_realized_pnl,
+            "total_fees": portfolio.total_fees,
+            "total_slippage_cost": portfolio.total_slippage_cost,
+            "positions": sorted(
+                [p.symbol, p.quantity, p.cost_basis, p.realized_pnl]
+                for p in portfolio.positions.values()
+            ),
+            "applied_fill_ids": sorted(portfolio._applied_fill_ids),
+            "applied_action_ids": sorted(portfolio._applied_action_ids),
+            "pending": pending,
+            "marks": {s: m for s, m in self._previous_marks.items() if s in relevant},
+            "peak_equity": state.peak_equity,
+            "current_equity": state.current_equity,
+            "paused": state.paused,
+            "pause_reason": state.pause_reason,
+            "last_closed": sorted(
+                [t.strategy_id, t.symbol, t.quantity, t.pnl]
+                for t in state._last_closed.values()
+            ),
+            "last_order_quantity": sorted(
+                [strategy_id, symbol, quantity]
+                for (strategy_id, symbol), quantity in state._last_order_quantity.items()
+            ),
+            "session_index": self._session_index,
+            "order_sequence": self._order_sequence,
+        }
+        encoded = json.dumps(_canonical(body), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def status(self) -> dict:
         marks = self._session_view.marks() if self._session_view else self._previous_marks

@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS data_revisions (
     detected_at TIMESTAMP,
     ingest_run_id VARCHAR
 );
+CREATE TABLE IF NOT EXISTS price_move_acknowledgements (
+    symbol VARCHAR NOT NULL,
+    move_date DATE NOT NULL,
+    reason VARCHAR NOT NULL,
+    acknowledged_at TIMESTAMP,
+    PRIMARY KEY (symbol, move_date)
+);
 """
 
 BAR_KEYS = [("symbol", "VARCHAR"), ("trade_date", "DATE"), ("source", "VARCHAR")]
@@ -446,6 +453,63 @@ class Warehouse:
         ).fetchall()
         return self.count("corporate_actions") - before
 
+    def acknowledge_price_move(self, symbol: str, move_date: date, reason: str) -> None:
+        """Record that a raw price move was inspected and is not a missing split.
+
+        A data fact shared by every book. Re-adding the same key with the same
+        reason is a no-op; a different reason is refused rather than rewritten.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValidationError(
+                f"{symbol} {move_date}: acknowledging a price move requires a reason"
+            )
+        reason = reason.strip()
+        existing = self.con.execute(
+            "SELECT reason FROM price_move_acknowledgements WHERE symbol = ? AND move_date = ?",
+            [symbol, move_date],
+        ).fetchall()
+        if existing:
+            if existing[0][0] != reason:
+                raise ValidationError(
+                    f"{symbol} {move_date} is already acknowledged with a different reason "
+                    f"({existing[0][0]!r}); refusing to rewrite it"
+                )
+            return
+        self.con.execute(
+            "INSERT INTO price_move_acknowledgements VALUES (?, ?, ?, ?)",
+            [symbol, move_date, reason, _utc_naive(datetime.now(timezone.utc))],
+        )
+
+    def price_move_acknowledgements(self) -> set[tuple[str, date]]:
+        rows = self.con.execute(
+            "SELECT symbol, move_date FROM price_move_acknowledgements"
+        ).fetchall()
+        return {(s, d) for s, d in rows}
+
+    def record_manual_split(self, symbol: str, effective_date: date, ratio: Decimal) -> None:
+        """Record a split the vendor is missing, as source 'manual'.
+
+        Validated through CorporateAction.split. A different ratio already on
+        file for the same symbol and date is refused, not overwritten.
+        """
+        CorporateAction.split(symbol, effective_date, ratio, "manual")
+        existing = self.con.execute(
+            "SELECT ratio FROM corporate_actions WHERE symbol = ? AND effective_date = ? "
+            "AND action_type = 'split' AND source = 'manual'",
+            [symbol, effective_date],
+        ).fetchall()
+        if existing:
+            if existing[0][0] != ratio:
+                raise ValidationError(
+                    f"{symbol} {effective_date}: a manual split of {existing[0][0]} is "
+                    f"already recorded; refusing to replace it with {ratio}"
+                )
+            return
+        self.upsert_corporate_actions([
+            {"symbol": symbol, "effective_date": effective_date, "action_type": "split",
+             "ratio": ratio, "source": "manual"},
+        ])
+
     def corporate_action_dates(self) -> set[tuple[str, date]]:
         rows = self.con.execute("SELECT symbol, effective_date FROM corporate_actions").fetchall()
         return {(s, d) for s, d in rows}
@@ -455,7 +519,7 @@ class Warehouse:
         symbols: Iterable[str] | None = None,
         start: date | None = None,
         end: date | None = None,
-        source: str | None = None,
+        source: str | Iterable[str] | None = None,
     ) -> list[CorporateAction]:
         where, params = [], []
         if symbols is not None:
@@ -471,8 +535,9 @@ class Warehouse:
             where.append("effective_date <= ?")
             params.append(end)
         if source is not None:
-            where.append("source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else list(source)
+            where.append(f"source IN ({', '.join('?' * len(sources))})")
+            params += sources
         sql = "SELECT symbol, effective_date, action_type, ratio, cash_amount, source FROM corporate_actions"
         if where:
             sql += " WHERE " + " AND ".join(where)

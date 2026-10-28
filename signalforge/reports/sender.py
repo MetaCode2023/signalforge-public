@@ -25,7 +25,7 @@ VARIABLES = (
     "SIGNALFORGE_ACCESS_CLIENT_SECRET",
     "SIGNALFORGE_INGEST_SECRET",
 )
-_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+_ERROR_CODE = re.compile(r"^(?:[a-z][a-z0-9_]{0,39}|Invalid field: [a-z][a-z0-9_.]{0,59})$")
 
 log = logging.getLogger(__name__)
 

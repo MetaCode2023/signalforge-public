@@ -37,7 +37,7 @@ def paper():
         "event_type": "paper_session", "run_id": "research-20261028",
         "occurred_at": "2026-10-28T15:30:05Z",
         "payload": {
-            "strategy_id": "buy_and_hold", "as_of": "2026-10-27", "equity": 100000.0,
+            "strategy_id": "buy_and_hold", "as_of": "2026-10-27T00:00:00Z", "equity": 100000.0,
             "cash": 500.0, "realized_pnl": 0.0, "unrealized_pnl": 12.5,
             "positions": [{"symbol": "AAPL", "qty": 10, "avg_cost": 150.0, "market_value": 1600.0}],
         },
@@ -48,7 +48,7 @@ def backtest_payload():
     return {
         "strategy_id": "ma_trend-50-200", "dataset_version": "ab12cd34ef56",
         "commit_sha": SHA, "return_pct": 12.34, "max_drawdown_pct": 8.0, "trades": 14,
-        "period_start": "2020-01-01", "period_end": "2021-12-31", "status": "candidate",
+        "period_start": "2020-01-01T00:00:00Z", "period_end": "2021-12-31T00:00:00Z", "status": "candidate",
     }
 
 
@@ -305,7 +305,7 @@ def test_backtest_events_map_fields(tmp_path):
     assert p["return_pct"] == pytest.approx(12.34)
     assert p["max_drawdown_pct"] == pytest.approx(8.0)
     assert p["trades"] == 14 and p["sharpe"] == pytest.approx(0.8)
-    assert (p["period_start"], p["period_end"]) == ("2020-01-01", "2021-12-31")
+    assert (p["period_start"], p["period_end"]) == ("2020-01-01T00:00:00Z", "2021-12-31T00:00:00Z")
     assert p["status"] == "candidate" and p["baseline_strategy_id"] == "nasdaqcom.buy_and_hold"
     assert "rejection_reason" not in p
 
@@ -315,7 +315,7 @@ def test_backtest_never_emits_test_window(tmp_path):
     record(wh, window="test")
     record(wh, window="validation")
     events, _ = ev.build_backtest_events(wh, NOW, "r")
-    assert [e["payload"]["period_start"] for e in events] == ["2022-01-01"]
+    assert [e["payload"]["period_start"] for e in events] == ["2022-01-01T00:00:00Z"]
     wh2 = make_wh(tmp_path, "w2.duckdb")
     record(wh2, window="test")
     assert ev.build_backtest_events(wh2, NOW, "r")[0] == []
@@ -476,3 +476,9 @@ def test_heartbeat_lists_approved_strategies_and_build_all_order(tmp_path):
     assert all(e["run_id"] == "research-20261028" for e in events)
     for e in events:
         ev.validate_event(e)
+
+
+@pytest.mark.parametrize("field", ["period_start", "period_end"])
+def test_a_bare_date_is_refused_because_the_worker_rejects_it(field):
+    with pytest.raises(ev.EventInvalid):
+        ev.validate_event(backtest(**{field: "2020-06-01"}))

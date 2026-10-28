@@ -31,7 +31,6 @@ _RUN_ID = _SLUG
 _SYMBOL = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _OCCURRED = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$")
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ALNUM_RUN = re.compile(r"[A-Za-z0-9]{32,}")
 _SECRET_PATTERNS = (
     re.compile(r"[0-9a-fA-F]{48,}"),
@@ -86,8 +85,6 @@ def _iso(value) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        if _DATE.match(value):
-            return datetime.fromisoformat(value)
         if _OCCURRED.match(value):
             return datetime.fromisoformat(value[:-1])
     except ValueError:
@@ -432,7 +429,7 @@ def build_backtest_events(wh, now, run_id, book="research"):
             "strategy_id": _strategy_id(kind, name, params), "dataset_version": fp[:12], "commit_sha": commit,
             "return_pct": round(float(Decimal(str(total)) * 100), 4),
             "max_drawdown_pct": round(float(drawdown) * 100, 4), "trades": int(trades),
-            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "period_start": f"{start.isoformat()}T00:00:00Z", "period_end": f"{end.isoformat()}T00:00:00Z",
             "status": "rejected" if decision == "REJECTED" else "candidate",
         }
         if sharpe is not None:

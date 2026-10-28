@@ -242,3 +242,8 @@ def test_post_uses_timeout_30_and_never_disables_verification():
     kw = session.calls[0][1]
     assert kw["timeout"] == 30
     assert "verify" not in kw
+
+
+def test_the_workers_invalid_field_message_is_carried():
+    out = sender.send(event(), FakeSession(FakeResponse(422, {"error": "Invalid field: period_start"})), creds())
+    assert not out.ok and out.error_code == "Invalid field: period_start"

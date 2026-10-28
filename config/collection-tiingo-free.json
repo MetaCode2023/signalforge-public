@@ -1,0 +1,17 @@
+{
+  "provider": "tiingo",
+  "series_ids": [],
+  "symbols": [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
+    "NFLX", "JPM", "BAC", "WMT", "COST", "XOM", "CVX", "UNH", "JNJ",
+    "KO", "PG", "CAT", "SPY", "QQQ", "IWM"
+  ],
+  "interval_seconds": 86400,
+  "daily_at_utc": "03:00",
+  "stale_after_days": 7,
+  "lookback_days": 14,
+  "max_attempts": 1,
+  "retry_seconds": 60,
+  "max_retry_seconds": 300,
+  "requests_per_day": 46
+}

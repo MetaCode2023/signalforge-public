@@ -1,0 +1,439 @@
+"""Turning the warehouse into runnable histories, and running the baselines.
+
+Two kinds of history come out of this module and they are NOT interchangeable:
+
+* `series_history` builds bars from a macro or index series. Those bars carry
+  one number, the close, repeated into open/high/low, and `volume_known` is
+  False. Backtests on them are PROXY STUDIES: you cannot buy an index, there
+  is no intraday range, and no traded size constrains a fill.
+* `ohlcv_history` builds bars from real per-symbol OHLCV with volume.
+
+Every history returned carries its own limitation notes, which travel into
+`BacktestResult.data_limitations` and from there into the reports.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
+
+from signalforge.backtesting.engine import BacktestEngine
+from signalforge.backtesting.metrics import PerformanceMetrics, compute_metrics
+from signalforge.config.models import ConfigBundle, ResearchConfig, RiskConfig
+from signalforge.core.errors import ValidationError
+from signalforge.core.history import PriceHistory, summarise_symbols
+from signalforge.core.interfaces import BacktestResult
+from signalforge.core.types import Bar
+from signalforge.data.storage import Warehouse
+from signalforge.strategies.registry import build
+
+ZERO = Decimal("0")
+
+PROXY_NOTE = (
+    "PROXY STUDY, NOT A TRADEABLE RESULT. This run uses the {series} index "
+    "level as if it were a tradeable instrument. It is not: an index cannot be "
+    "bought. A real implementation would trade an ETF and would pay its "
+    "tracking error, expense ratio, spread and creation/redemption friction, "
+    "none of which are modelled here."
+)
+
+CLOSE_ONLY_NOTE = (
+    "Close-only series: open, high and low are all set to the published close, "
+    "so there is no intraday range. Gap modelling degrades to close-to-close "
+    "and limit orders cannot be evaluated against a real high or low."
+)
+
+
+VOLATILITY_REGIMES = ("low_vol", "mid_vol", "high_vol")
+REGIME_WARMUP_SESSIONS = 252
+
+
+def volatility_regime_labels(
+    observations: list[tuple[date, Decimal]],
+    warmup: int = REGIME_WARMUP_SESSIONS,
+) -> dict[date, str]:
+    """Label each date low/mid/high volatility from a volatility series.
+
+    Classification is POINT IN TIME: each date is placed against the terciles
+    of the observations up to and including it, never against the terciles of
+    the whole history. A boundary computed over the full series would move
+    every historical label as new data arrived — in 1995 nobody knew the
+    1995-2026 VIX distribution, and using it is look-ahead bias dressed up as
+    a regime definition.
+
+    The first `warmup` observations are left UNLABELLED rather than guessed.
+    A date absent from the result means "not classifiable", which the metrics
+    layer reports as unlabelled instead of folding into a regime.
+    """
+    if warmup < 0:
+        raise ValidationError(f"warmup must not be negative, got {warmup}")
+    usable = [(d, v) for d, v in sorted(observations) if v is not None and v > ZERO]
+    if len(usable) <= warmup:
+        return {}
+
+    labels: dict[date, str] = {}
+    history: list[Decimal] = [v for _, v in usable[:warmup]]
+    for day, value in usable[warmup:]:
+        history.append(value)
+        ranked = sorted(history)
+        lower = ranked[len(ranked) // 3]
+        upper = ranked[(2 * len(ranked)) // 3]
+        if value <= lower:
+            labels[day] = "low_vol"
+        elif value >= upper:
+            labels[day] = "high_vol"
+        else:
+            labels[day] = "mid_vol"
+    return labels
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryBundle:
+    history: PriceHistory
+    limitations: tuple[str, ...]
+    description: str
+
+
+@dataclass(slots=True)
+class StrategyOutcome:
+    strategy_id: str
+    label: str
+    window: str
+    result: BacktestResult
+    metrics: PerformanceMetrics
+
+    @property
+    def total_return(self) -> Decimal:
+        if not self.result.equity_curve:
+            return ZERO
+        return (self.result.final_equity / self.result.starting_cash) - Decimal(1)
+
+
+@dataclass(slots=True)
+class ResearchRun:
+    window: str
+    start: date
+    end: date
+    dataset_description: str
+    dataset_fingerprint: str
+    limitations: list[str] = field(default_factory=list)
+    outcomes: list[StrategyOutcome] = field(default_factory=list)
+
+    def by_id(self, strategy_id: str) -> StrategyOutcome | None:
+        for outcome in self.outcomes:
+            if outcome.strategy_id == strategy_id:
+                return outcome
+        return None
+
+
+def series_history(
+    observations: list[tuple[date, Decimal]], symbol: str, source: str = "fred"
+) -> HistoryBundle:
+    """Build a close-only history from a series of (date, value) pairs.
+
+    Non-positive observations are dropped rather than coerced: a zero or
+    negative index level is not a price, and the alternative is inventing one.
+    """
+    if not observations:
+        raise ValidationError(f"no observations supplied for {symbol}")
+    bars: list[Bar] = []
+    dropped = 0
+    for day, value in sorted(observations):
+        if value is None or value <= ZERO:
+            dropped += 1
+            continue
+        bars.append(
+            Bar(
+                symbol=symbol,
+                trade_date=day,
+                open=value,
+                high=value,
+                low=value,
+                close=value,
+                volume=0,
+                adj_close=value,
+                source=source,
+                volume_known=False,
+            )
+        )
+    if not bars:
+        raise ValidationError(f"every observation for {symbol} was non-positive")
+    notes = [PROXY_NOTE.format(series=symbol), CLOSE_ONLY_NOTE]
+    if dropped:
+        notes.append(
+            f"{dropped} {symbol} observations were non-positive and were dropped "
+            "rather than coerced into a price."
+        )
+    notes.append(
+        f"Dividends are not reflected: {symbol} is a price index, so total "
+        "return is understated for buy-and-hold and for any strategy holding it."
+    )
+    return HistoryBundle(
+        history=PriceHistory.from_bars(bars),
+        limitations=tuple(notes),
+        description=(
+            f"{symbol} daily close from {source}, {len(bars)} observations "
+            f"{bars[0].trade_date.isoformat()} to {bars[-1].trade_date.isoformat()}"
+        ),
+    )
+
+
+# A gap this long inside one symbol's history is not a holiday. Above the
+# refusal threshold it is almost certainly two unrelated datasets glued
+# together; between the two it loads but must be declared.
+GAP_DECLARE_DAYS = 60
+GAP_REFUSE_DAYS = 365
+
+
+def ohlcv_history(
+    warehouse: Warehouse, symbols: list[str], sources: list[str] | None = None
+) -> HistoryBundle:
+    """Build a history from real per-symbol OHLCV stored in the warehouse.
+
+    Refuses a symbol whose bars contain a multi-year hole. The warehouse can
+    hold the same symbol from two unrelated datasets (a 2015-2017 sample and a
+    2026 four-day snapshot, in this project's case). Concatenating them yields
+    a history with a 9.5-year hole, and a moving average or z-score computed
+    across that hole is meaningless while looking exactly like a real number.
+
+    Pass `sources` to select one dataset deliberately.
+    """
+    bars = warehouse.load_bars(symbols=symbols)
+    if sources is not None:
+        allowed = set(sources)
+        bars = [b for b in bars if b.source in allowed]
+    if not bars:
+        where = f" from sources {sorted(sources)}" if sources else ""
+        raise ValidationError(
+            f"no bars in the warehouse for {summarise_symbols(symbols)}{where}"
+        )
+
+    notes: list[str] = []
+    for symbol in sorted({b.symbol for b in bars}):
+        symbol_bars = sorted(
+            (b for b in bars if b.symbol == symbol), key=lambda b: b.trade_date
+        )
+        for previous, current in zip(symbol_bars, symbol_bars[1:]):
+            gap = (current.trade_date - previous.trade_date).days
+            if gap < GAP_DECLARE_DAYS:
+                continue
+            detail = (
+                f"{symbol} has a {gap}-day gap between {previous.trade_date} "
+                f"(source {previous.source}) and {current.trade_date} "
+                f"(source {current.source})"
+            )
+            if gap >= GAP_REFUSE_DAYS:
+                raise ValidationError(
+                    detail
+                    + ". That is not a holiday: these are almost certainly two "
+                    "unrelated datasets concatenated. Any trailing-window "
+                    "calculation would span the gap and produce a meaningless "
+                    "number that looks real. Pass `sources=[...]` to choose one."
+                )
+            notes.append(
+                "DISCONTINUOUS HISTORY: "
+                + detail
+                + ". Any trailing window spanning it mixes two regimes."
+            )
+
+    days = sorted({b.trade_date for b in bars})
+    if len(days) < 252:
+        notes.append(
+            f"Only {len(days)} distinct trading days available for "
+            f"{summarise_symbols(symbols)}; below the 252-session floor for "
+            "annualised statistics."
+        )
+    sources = sorted({b.source for b in bars})
+    if any(b.adj_close is None for b in bars):
+        notes.append(
+            "Some bars carry no adjusted close, so dividends are not reflected "
+            "for those symbols."
+        )
+    return HistoryBundle(
+        history=PriceHistory.from_bars(bars),
+        limitations=tuple(notes),
+        description=(
+            f"{len(bars)} OHLCV bars for {len(set(b.symbol for b in bars))} symbols "
+            f"from {', '.join(sources)}, {days[0].isoformat()} to {days[-1].isoformat()}"
+        ),
+    )
+
+
+def load_index_bundle(warehouse: Warehouse, series_id: str) -> HistoryBundle:
+    observations = warehouse.load_series(series_id)
+    return series_history(observations, symbol=series_id)
+
+
+# ----------------------------------------------------------------------
+# The baseline suite
+# ----------------------------------------------------------------------
+def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
+    """The four baselines plus the benchmark, as (label, strategy_id, params).
+
+    Parameters are deliberately conventional textbook values, chosen before
+    looking at any result, so that the first pass is not already a fitted one.
+    """
+    return [
+        (
+            "MA trend 50/200",
+            "ma_trend",
+            {
+                "fast_window": 50,
+                "slow_window": 200,
+                "target_weight": Decimal("0.05"),
+                "symbols": (symbol,),
+            },
+        ),
+        (
+            "Cross-sectional momentum 126/21",
+            "xs_momentum",
+            {
+                "lookback_days": 126,
+                "skip_days": 21,
+                "top_n": 1,
+                "target_weight_total": Decimal("0.05"),
+                "min_history_days": 150,
+            },
+        ),
+        (
+            "Mean reversion z=2 / 20d",
+            "zscore_mean_reversion",
+            {
+                "window": 20,
+                # entry_z is a positive magnitude; the strategy enters when the
+                # z-score falls BELOW -entry_z and exits above -exit_z.
+                "entry_z": Decimal("2"),
+                "exit_z": Decimal("0"),
+                "target_weight": Decimal("0.05"),
+                "max_holding_days": 20,
+                "symbols": (symbol,),
+            },
+        ),
+        (
+            "Vol-targeted trend 10% ann.",
+            "vol_targeted_trend",
+            {
+                "fast_window": 50,
+                "slow_window": 200,
+                "target_volatility": Decimal("0.10"),
+                "vol_window": 20,
+                "max_weight": Decimal("0.05"),
+                "annualisation_factor": 252,
+                "symbols": (symbol,),
+            },
+        ),
+        (
+            "Buy and hold (benchmark)",
+            "buy_and_hold",
+            {"symbols": (symbol,), "target_weight": Decimal("0.05")},
+        ),
+    ]
+
+
+def load_regime_labels(
+    warehouse: Warehouse, series_id: str = "VIXCLS"
+) -> tuple[dict[date, str], str]:
+    """Point-in-time volatility regime labels, plus a note on their provenance.
+
+    Returns an empty mapping and a reason when the series is unavailable, so a
+    caller can say "not classified, because X" rather than rendering an empty
+    regime table that reads as "no regimes found".
+    """
+    try:
+        observations = warehouse.load_series(series_id)
+    except Exception as exc:  # the series simply may not be ingested
+        return {}, f"no regime labels: {series_id} could not be read ({exc})"
+    if not observations:
+        return {}, f"no regime labels: {series_id} has no observations in the warehouse"
+    labels = volatility_regime_labels(observations)
+    if not labels:
+        return {}, (
+            f"no regime labels: {series_id} has only {len(observations)} observations, "
+            f"fewer than the {REGIME_WARMUP_SESSIONS}-session warmup needed to "
+            "classify a regime without looking ahead"
+        )
+    days = sorted(labels)
+    return labels, (
+        f"Regimes from {series_id} terciles, classified point-in-time with a "
+        f"{REGIME_WARMUP_SESSIONS}-session expanding warmup: {len(labels)} labelled "
+        f"sessions from {days[0]} to {days[-1]}."
+    )
+
+
+def run_window(
+    bundle: HistoryBundle,
+    config: ConfigBundle,
+    window: str,
+    *,
+    specs: list[tuple[str, str, dict]] | None = None,
+    regime_labels: dict[date, str] | None = None,
+) -> ResearchRun:
+    """Run the baseline suite over one named evaluation window."""
+    splits = config.research.splits
+    if splits is None:
+        raise ValidationError("research config defines no splits; cannot run a named window")
+    bounds = {
+        "train": (splits.train_start, splits.train_end),
+        "validation": (splits.validation_start, splits.validation_end),
+        "test": (splits.test_start, splits.test_end),
+    }
+    if window not in bounds:
+        raise ValidationError(f"unknown window {window!r}; expected one of {sorted(bounds)}")
+    start, end = bounds[window]
+
+    symbol = bundle.history.symbols[0]
+    specs = specs or baseline_specs(symbol)
+    engine = BacktestEngine(config.research, config.risk)
+
+    run = ResearchRun(
+        window=window,
+        start=start,
+        end=end,
+        dataset_description=bundle.description,
+        dataset_fingerprint=BacktestEngine.fingerprint(bundle.history, start, end),
+        limitations=list(bundle.limitations),
+    )
+
+    benchmark_curve = None
+    for label, strategy_id, params in specs:
+        strategy = build(strategy_id, **params)
+        result = engine.run(
+            strategy,
+            bundle.history,
+            start=start,
+            end=end,
+            run_id=f"{strategy_id}:{window}",
+            data_limitations=list(bundle.limitations),
+        )
+        metrics = compute_metrics(
+            result,
+            benchmark_curve=benchmark_curve,
+            config=config.research,
+            regime_labels=regime_labels,
+        )
+        if strategy_id == "buy_and_hold":
+            benchmark_curve = result.equity_curve
+        run.outcomes.append(
+            StrategyOutcome(
+                strategy_id=strategy_id,
+                label=label,
+                window=window,
+                result=result,
+                metrics=metrics,
+            )
+        )
+
+    # Re-score everything against the benchmark now that it exists, so the
+    # benchmark-relative figures are populated for every strategy.
+    if benchmark_curve is not None:
+        for outcome in run.outcomes:
+            if outcome.strategy_id == "buy_and_hold":
+                continue
+            outcome.metrics = compute_metrics(
+                outcome.result,
+                benchmark_curve=benchmark_curve,
+                config=config.research,
+                regime_labels=regime_labels,
+            )
+    return run

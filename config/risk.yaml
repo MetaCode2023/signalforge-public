@@ -1,0 +1,23 @@
+# SIGNALFORGE risk limits.
+#
+# These are configurable RESEARCH DEFAULTS. They govern which orders the risk
+# engine will accept. They are NOT a promise that realised losses stay inside
+# them: an overnight gap, a halt, or a liquidity failure can carry the book
+# through any of these levels before an order can be placed.
+
+risk_budget_per_trade: "0.005"        # 0.5% of equity at risk per trade
+max_single_name_exposure: "0.05"      # 5% of equity in any one symbol
+max_daily_loss: "0.02"                # 2% single-day loss trips the breaker
+max_portfolio_drawdown: "0.10"        # 10% peak-to-trough trips the breaker
+max_gross_leverage: "1.0"             # cash only, no borrowing
+max_positions: 20
+max_orders_per_day: 50
+max_orders_per_symbol_per_day: 2
+stale_data_max_age_days: 5            # refuse to trade on data older than this
+max_correlated_cluster_exposure: "0.20"
+
+allow_margin: false
+allow_short: false
+allow_options: false
+allow_averaging_down: false           # martingale defence; see risk/martingale.py
+allow_pyramiding: false

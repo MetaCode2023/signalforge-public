@@ -1,0 +1,150 @@
+# SIGNALFORGE data sources.
+#
+# Every source we investigated stays in this file, including the ones we
+# refused, with the reason recorded. The refusals are part of the audit trail:
+# without them, a later session re-litigates the decision from memory and may
+# reach a different answer.
+#
+# This file names ENV VARS, never secret values.
+
+user_agent: "signalforge-research/0.1 (research; contact research@example.com)"
+
+providers:
+
+  fred:
+    kind: series
+    status: active
+    enabled: true
+    requires_key: false
+    base_url: "https://fred.stlouisfed.org/graph/fredgraph.csv"
+    licence_note: >-
+      FRED series are published by the Federal Reserve Bank of St. Louis. The
+      keyless fredgraph.csv endpoint is a documented public download. Most
+      series carry no usage restriction; some third-party series (notably
+      SP500 and DJIA) are capped at 10 years by the data owner's licence.
+    terms_url: "https://fred.stlouisfed.org/legal/"
+    rate_limit_per_minute: 20
+    notes: >-
+      Verified reachable 2026-10-26: HTTP 200, NASDAQCOM returned 14048 daily
+      observations from 1971-02-05. This is the only multi-decade daily price
+      series available to the project without an API key. It is an INDEX CLOSE
+      series: no open, high, low or volume, so intraday fill modelling is not
+      possible against it.
+
+  local_archive:
+    kind: archive
+    status: active
+    enabled: true
+    requires_key: false
+    licence_note: >-
+      Files already acquired by the operator and stored under data/archive.
+      Includes the MarketParquet cross-section and the historical AAPL sample
+      exported from the operator's own Google Sheet. MarketParquet's licence
+      permits internal research and prohibits redistribution of raw data, so
+      these files are gitignored and never published.
+    terms_url: "https://marketparquet.com/license"
+    notes: >-
+      This provider reads local files only. It never makes a network request,
+      which is what keeps the MarketParquet no-redistribution term safe.
+
+  tiingo:
+    kind: bars
+    status: pending_key
+    enabled: false
+    requires_key: true
+    api_key_env: "TIINGO_API_KEY"
+    base_url: "https://api.tiingo.com/tiingo/daily"
+    licence_note: >-
+      Tiingo free tier permits personal and internal research use. Free tier
+      is documented at roughly 1000 requests/day and 500 unique symbols/month,
+      which is enough for the 100-500 symbol target.
+    terms_url: "https://www.tiingo.com/about/terms"
+    rate_limit_per_minute: 30
+    notes: >-
+      PREFERRED source for per-symbol daily OHLCV with adjusted close and
+      dividend/split fields. Adapter is implemented and fixture-tested but
+      CANNOT RUN: no TIINGO_API_KEY exists. Claiming a free key is the
+      operator's decision because it creates an account in their name.
+
+  alphavantage:
+    kind: bars
+    status: pending_key
+    enabled: false
+    requires_key: true
+    api_key_env: "ALPHAVANTAGE_API_KEY"
+    base_url: "https://www.alphavantage.co/query"
+    licence_note: >-
+      Alpha Vantage free tier permits non-commercial research use with
+      attribution. Free tier is limited to roughly 25 requests/day.
+    terms_url: "https://www.alphavantage.co/terms_of_service/"
+    rate_limit_per_minute: 5
+    notes: >-
+      FALLBACK only. Verified 2026-10-26 that the shared `demo` key returns
+      just an informational notice, so it cannot be used for real ingestion.
+      At 25 requests/day a 500-symbol universe takes 20 days to populate.
+
+  stooq:
+    kind: bars
+    status: rejected
+    enabled: false
+    requires_key: false
+    licence_note: >-
+      Stooq publishes free CSV endpoints and bulk history archives.
+    terms_url: "https://stooq.com/"
+    rejection_reason: >-
+      REJECTED 2026-10-26. The CSV endpoint now returns a JavaScript
+      proof-of-work browser challenge instead of data, and the bulk archive at
+      static.stooq.com returns HTTP 401. Both are deliberate anti-automation
+      controls. Solving the challenge would be bypassing an access control,
+      which this project does not do regardless of how convenient the data is.
+
+  marketparquet_api:
+    kind: bars
+    status: rejected
+    enabled: false
+    requires_key: false
+    base_url: "https://marketparquet.com/api/data"
+    licence_note: >-
+      MarketParquet offers free downloadable daily samples; its licence permits
+      internal research but prohibits redistributing raw data.
+    terms_url: "https://marketparquet.com/license"
+    rejection_reason: >-
+      REJECTED for automated pulls 2026-10-26. The site's robots.txt contains
+      `Disallow: /api/`, and every sample download URL lives under /api/.
+      Fetching them programmatically would be automated extraction the
+      publisher has asked crawlers not to perform. Files the operator already
+      downloaded by hand are used via the local_archive provider instead. The
+      free tier is also only a few recent days, so it cannot supply history.
+
+  yahoo_finance:
+    kind: bars
+    status: rejected
+    enabled: false
+    requires_key: false
+    licence_note: >-
+      The query1.finance.yahoo.com chart endpoint used by the yfinance package
+      is not a documented public API.
+    terms_url: "https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html"
+    rejection_reason: >-
+      REJECTED 2026-10-26 after review, not overlooked. The endpoint is
+      undocumented, Yahoo's terms are adverse to automated collection, and it
+      has a track record of silent breaking changes and rate limiting. A
+      research warehouse whose provenance is an undocumented endpoint cannot
+      claim reproducibility.
+
+  nasdaq_data_link:
+    kind: bars
+    status: rejected
+    enabled: false
+    requires_key: true
+    api_key_env: "NASDAQ_DATA_LINK_API_KEY"
+    base_url: "https://data.nasdaq.com/api/v3/datasets"
+    licence_note: >-
+      Nasdaq Data Link hosts free community datasets, including the frozen
+      WIKI/PRICES end-of-day table.
+    terms_url: "https://data.nasdaq.com/terms"
+    rejection_reason: >-
+      Not usable now: verified HTTP 403 without a key on 2026-10-26, and the
+      free WIKI price table has been frozen since 2018. Recorded as a
+      candidate rather than a live source. Revisit only if a key appears and
+      pre-2018 history is wanted.

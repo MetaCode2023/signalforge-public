@@ -1,0 +1,13 @@
+{
+  "provider": "fred",
+  "series_ids": ["NASDAQCOM", "VIXCLS"],
+  "interval_seconds": 86400,
+  "daily_at_utc": "23:30",
+  "stale_after_days": 7,
+  "stale_after_days_by_item": {},
+  "lookback_days": 14,
+  "max_attempts": 3,
+  "retry_seconds": 30,
+  "max_retry_seconds": 300,
+  "requests_per_day": 24
+}

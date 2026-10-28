@@ -1,0 +1,10 @@
+{
+  "provider": "local_archive",
+  "series_ids": [],
+  "symbols": ["AAPL"],
+  "datasets": ["aapl_sample_2015_2017"],
+  "interval_seconds": 86400,
+  "daily_at_utc": null,
+  "stale_after_days": 7,
+  "max_attempts": 1
+}

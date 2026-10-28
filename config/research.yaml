@@ -1,0 +1,61 @@
+# SIGNALFORGE research configuration.
+#
+# paper_only is not a tunable. The loader refuses to start if it is false.
+
+starting_cash: "100000"               # SIMULATED money. No real capital exists here.
+paper_only: true
+random_seed: 20261026
+benchmark_symbol: "NASDAQCOM"
+
+# Minimum evidence thresholds. A result below either of these is reported as
+# INSUFFICIENT EVIDENCE rather than given a performance verdict.
+min_trades_for_evidence: 30
+min_observations_for_metrics: 252
+
+# Research universe intent. Actual availability is governed by ingested data,
+# not by this list: see reports/DATA_COVERAGE.md for what is really present.
+# This list is NOT survivorship-bias free. Every name in it survived to 2026;
+# the companies that failed over the same period are absent by construction.
+universe:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - TSLA
+  - AMD
+  - NFLX
+  - JPM
+  - BAC
+  - WMT
+  - COST
+  - XOM
+  - CVX
+  - UNH
+  - JNJ
+  - KO
+  - PG
+  - CAT
+  - SPY
+  - QQQ
+  - IWM
+
+execution:
+  commission_per_share: "0.005"
+  min_commission: "1.00"
+  slippage_bps: "5"                   # 5 bps each way on the reference price
+  fill_delay_days: 1                  # signal at close T, earliest fill T+1
+  max_participation_of_volume: "0.01" # cap fill at 1% of that bar's volume
+  allow_partial_fills: true
+  gap_slippage_multiplier: "2.0"      # a gap through the reference costs double
+
+# Disjoint evaluation windows over the NASDAQCOM daily history (1971-2026).
+# The loader refuses any overlap: an overlap is data leakage.
+splits:
+  train_start: "1971-02-05"
+  train_end: "2004-12-31"
+  validation_start: "2005-01-01"
+  validation_end: "2014-12-31"
+  test_start: "2015-01-01"
+  test_end: "2026-10-23"

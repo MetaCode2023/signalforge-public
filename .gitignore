@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.duckdb
+*.duckdb.wal
+.venv/
+*.egg-info/
+venv/
+.env
+.env.*
+!.env.example
+!.env.template
+*.key
+*.pem
+personal-secrets.md
+data/raw/**
+!data/raw/.gitkeep
+data/warehouse/
+data/verification/
+
+# Collector sidecars for warehouses placed outside data/warehouse/.
+*.collector.lock
+*.collector.json
+*.collector.jsonl
+*.collector-budget.json
+dashboard/build/
+.hypothesis/
+
+# Licensed source data. MarketParquet permits internal research but forbids
+# redistribution, so acquired raw files stay local and out of version control.
+data/archive/**
+!data/archive/.gitkeep
+!data/archive/README.md

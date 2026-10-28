@@ -1,0 +1,28 @@
+[project]
+name = "signalforge"
+version = "0.1.0"
+description = "Quantitative research and paper-trading platform. PAPER ONLY."
+requires-python = ">=3.12"
+dependencies = [
+  "duckdb>=2.0.0",
+  "polars>=2.1.0",
+  "pyarrow>=26.0.0",
+  "numpy>=2.0",
+  "pydantic>=2.9",
+  "PyYAML>=6.0",
+  "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0", "hypothesis>=6.100", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "network: test requires outbound network access",
+  "slow: long-running test",
+]
+
+[tool.setuptools.packages.find]
+include = ["signalforge*"]

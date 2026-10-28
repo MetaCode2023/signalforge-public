@@ -2,9 +2,54 @@
 
 Generated 2026-10-26 from the real warehouse at
 `data/warehouse/signalforge.duckdb` (gitignored; licensed source data is never
-committed).
+committed). Updated 2026-10-28 after the Tiingo key was issued and the
+warehouse was rebuilt on the operator's second machine.
 
-## The headline, stated plainly
+## Update 2026-10-28: per-symbol OHLCV now exists
+
+The brief's 100 to 500 stocks of multi-year daily OHLCV is now met. Counts
+below are from the rebuilt warehouse on 2026-10-28 (a fresh machine: the
+MarketParquet four-day snapshot and the AAPL sample were not re-ingested
+there, so every bar row is Tiingo).
+
+| Table | Rows |
+|---|---:|
+| `bars` (Tiingo daily OHLCV, adjusted close) | 4,087,602 |
+| `series` (FRED, 122 series, 1954-01-04 to 2026-10-28) | 894,347 |
+| `corporate_actions` | 47,903 |
+| `raw_records` (immutable as-ingested) | 4,981,949 |
+| `quality_flags` | 8,488 |
+| `price_move_acknowledgements` | 17 |
+| `quarantine` | 0 |
+
+- **493 symbols** (large caps plus 23 ETFs), each from its listing date or
+  1972-01-25 to 2026-10-27. 195 symbols have bars before 1990.
+- **Corporate actions:** 46,711 Tiingo dividends, 1,189 Tiingo splits, and 3
+  manual splits recorded after review (below).
+- **Tiingo free tier limits:** 50 requests/hour, 1,000/day, 500 unique
+  symbols/month. 493 of 500 were used in October 2026, so the next tranche of
+  symbols waits for November.
+
+### Data defects found in the Tiingo history (2026-10-28)
+
+A raw close-to-close move beyond 1.4x with no recorded split now refuses a
+paper run. The `corporate_actions_cli draft` triage over all 493 symbols
+found 353 such moves:
+
+| Category | Count | Meaning |
+|---|---:|---|
+| Real move | 315 | Tiingo's adjusted close moved by the same ratio: crashes, earnings gaps |
+| Missing split or spinoff | 26 | Adjusted close is smooth, so Tiingo adjusted for an event it never recorded (eBay/PayPal 2015, Yum/Yum China 2016, RTX 2020, GOOGL Class C 2014 and others) |
+| Needs review | 12 | Near-exact 2x/3x moves Tiingo did not adjust at all (CVX 1973 and 1981, BIO 1980, KR 1979, IFF 1994, AES 2001) or ambiguous separations (F 2000, HPQ 2015, HWM 2016, OXY 2020, TJX 1989, USB 1993) |
+
+For the 20-stock research universe all 20 flagged moves were resolved on
+2026-10-28: 17 acknowledged as real moves, and manual 2:1 splits recorded for
+CVX 1973-12-11, CVX 1981-03-11 and GOOGL 2014-04-03. **The CVX splits were
+missing from Tiingo's adjusted close as well**, so every adjusted-basis study
+before that date saw two fake 50% crashes. The other 473 symbols are not yet
+triaged and are not used by any run.
+
+## The original headline (2026-10-26), kept for the record
 
 **The brief asks for 5–10 years of daily OHLCV across 100–500 stocks. That is
 not reachable from any keyless, terms-clean source, and this build does not
@@ -90,7 +135,7 @@ the decision is not re-litigated from memory in a later session.
 |---|---|---|
 | **FRED** `fredgraph.csv` | **ACTIVE**, keyless | HTTP 200 verified. Documented public download |
 | **Local archive** | **ACTIVE**, no network | Files the operator already acquired. MarketParquet's licence permits internal research and forbids redistribution, so `data/archive/**` is gitignored |
-| **Tiingo** | **PENDING KEY** | Preferred for per-symbol OHLCV. Free tier ~1000 req/day, 500 symbols/month. Adapter written and fixture-tested; cannot run |
+| **Tiingo** | **ACTIVE** (key issued 2026-10-28) | Per-symbol OHLCV with adjusted close, dividends and splits. Free tier 50 req/hour, 1000 req/day, 500 symbols/month |
 | **Alpha Vantage** | **PENDING KEY** | Fallback. The shared `demo` key returns only a "claim your free key" notice (verified). 25 req/day means 20 days to fill 500 symbols |
 | **Stooq** | **REJECTED** | The CSV endpoint returns a JavaScript proof-of-work browser challenge; the bulk archive at `static.stooq.com` returns HTTP 401. Both are deliberate anti-automation controls, and solving one would be bypassing an access control |
 | **MarketParquet API** | **REJECTED for automated pulls** | `robots.txt` contains `Disallow: /api/` and every sample download URL is under `/api/`. The free tier is also only a few recent days, so it cannot supply history anyway |
@@ -109,9 +154,8 @@ the decision is not re-litigated from memory in a later session.
 A backtest over a survivor-only universe overstates returns and understates
 drawdown. No amount of code fixes that; only different data does.
 
-## The one action that would unblock this
+## The one action that would unblock this (DONE 2026-10-28)
 
-Claiming a **free Tiingo API key** (no payment, no card) would make per-symbol
-daily OHLCV with adjusted closes, splits and dividends ingestable immediately —
-the adapter already exists and is tested. That creates an account in Austin's
-name, so it is his call, not mine. Nothing else in this build is waiting on it.
+The free Tiingo key was issued and the adapter ran as tested. The survivorship
+bias above is the limit that remains: Tiingo's free tier serves listed
+symbols, so delisted companies are still absent.

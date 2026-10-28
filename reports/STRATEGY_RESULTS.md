@@ -457,6 +457,50 @@ single-name cap, so on this instrument the cap binds first and the volatility
 scaling never takes effect. The two strategies are distinguishable in their
 unit tests but not in this configuration. Logged as F-05.
 
+## The 20-stock universe on real OHLCV (added 2026-10-28)
+
+`python -m signalforge.research_cli --universe --benchmark SPY --source tiingo`
+over the 20 names in `config/research.yaml`, Tiingo daily bars on the adjusted
+basis, 1972-01-25 to 2026-10-27. The held-out test window was **not** run.
+
+Train 1971-02-05 to 2004-12-31, dataset `89767552ae61`:
+
+| Strategy | Total return | CAGR | Sharpe | Max DD | Trades | Capital deployed |
+|---|---:|---:|---:|---:|---:|---:|
+| MA trend 50/200 | 27.6% | 0.74% | 0.20 | 22.5% | 49 | 7.8% |
+| Cross-sectional momentum 126/21 | 15.3% | 0.43% | 0.20 | 8.6% | 355 | 2.6% |
+| Mean reversion z=2 / 20d | 26.6% | 0.72% | 0.33 | 7.6% | 550 | 3.5% |
+| Vol-targeted trend 10% | 27.6% | 0.74% | 0.20 | 22.5% | 49 | 7.8% |
+| Buy and hold SPY (benchmark) | 11.8% | 0.34% | 0.26 | 8.2% | 0 | 4.0% |
+
+Validation 2005-01-01 to 2014-12-31, dataset `f1cc21909975`:
+
+| Strategy | Total return | CAGR | Sharpe | Max DD | Trades | Capital deployed |
+|---|---:|---:|---:|---:|---:|---:|
+| MA trend 50/200 | 18.7% | 1.73% | 0.30 | 14.8% | 44 | 20.7% |
+| Cross-sectional momentum 126/21 | 1.4% | 0.14% | 0.08 | 6.8% | 154 | 3.6% |
+| Mean reversion z=2 / 20d | -8.1% | -0.84% | -0.32 | 11.7% | 164 | 3.9% |
+| Vol-targeted trend 10% | 18.7% | 1.73% | 0.30 | 14.8% | 44 | 20.7% |
+| Buy and hold SPY (benchmark) | 5.4% | 0.53% | 0.50 | 3.7% | 0 | 6.1% |
+
+**Two bad data points flipped a 34-year result.** Before the CVX 1973 and
+1981 splits were recorded (they are missing from Tiingo's adjusted close too),
+the same run, dataset `db1856704111`, had MA trend 50/200 at **-1.1%** over the
+train window on 23 trades. Each fake 50% crash put CVX below its 200-day
+average and kept the trend rule out of it. Validation is unchanged because
+both dates fall before 2005. This is why a raw jump beyond 1.4x with no
+recorded split now refuses a paper run until a human resolves it.
+
+Every figure in this section carries:
+
+- **Survivorship bias.** The 20 names are today's surviving large caps.
+- **Exposure mismatch.** The per-name strategies hold up to 5% per symbol
+  (up to roughly 100% gross); the benchmark holds 5% in one ETF. MA trend's
+  Sharpe (0.30) is below buy-and-hold's (0.50) over validation even though its
+  return is higher.
+- **Thin early coverage.** Most names are absent for much of the train window;
+  META and TSLA have no bars in it.
+
 ## Promotion decisions
 
 No strategy has been promoted. Nothing is running in paper trading.

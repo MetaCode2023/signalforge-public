@@ -8,7 +8,19 @@ work I can do without asking.
 
 ## Needs Austin first
 
-### 1. Decide on a free market-data key
+### 0. Update 2026-10-28
+- **Item 1 is DONE.** The Tiingo key was issued; 493 symbols of daily OHLCV
+  are in the warehouse (see `DATA_COVERAGE.md`).
+- **Phase 2 is built** (commits f4e38cc, 939bf7e, a42bf58, b9b3581): the paper
+  broker books splits, spinoff adjustments and dividends on raw prices,
+  refuses stale prices and unexplained jumps, and runs stock books with
+  `paper_cli --symbols` / `--universe`.
+- **Needs Austin:** approve a strategy for the stock book
+  (`paper_cli --universe --approve <strategy>`); rotate the Tiingo key, which
+  was pasted into a chat session; triage the 12 "review" jumps before widening
+  the universe beyond the 20 names.
+
+### 1. Decide on a free market-data key (DONE 2026-10-28)
 **Blocks:** F-01, F-06, and the entire cross-sectional half of the research
 programme.
 

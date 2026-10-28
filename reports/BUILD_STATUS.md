@@ -9,6 +9,16 @@ not re-run it myself, it says so.
 
 ## Test suite
 
+Update 2026-10-28, on `main` at b9b3581 (Phase 2), run on the operator's
+second machine:
+
+```
+$ python -m pytest -o addopts=""
+1531 passed, 1 skipped, 31 subtests passed in 514.15s
+```
+
+The original 2026-10-27 figure, for the record:
+
 ```
 $ python -m pytest -o addopts=""
 1161 passed, 1 skipped in 468.63s

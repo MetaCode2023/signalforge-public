@@ -20,15 +20,17 @@ fill expires rather than lingering to surprise someone later.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Sequence
 
-from signalforge.backtesting.execution import FillModel
+from signalforge.backtesting.execution import PRICE_PRECISION, FillModel
 from signalforge.backtesting.reconcile import reconcile_fill
 from signalforge.config.models import ResearchConfig, RiskConfig, validate_paper_runtime
 from signalforge.core.errors import LiveTradingAttempt, ValidationError
 from signalforge.core.history import PointInTimeView
 from signalforge.core.interfaces import RiskAction
 from signalforge.core.types import (
+    CorporateAction,
     Order,
     OrderStatus,
     OrderType,
@@ -36,6 +38,7 @@ from signalforge.core.types import (
     Position,
     Side,
 )
+from signalforge.paper.corporate_actions import apply_corporate_action
 from signalforge.paper.ledger import EventType, TradeLedger
 from signalforge.paper.statements import Statement
 from signalforge.risk.engine import Reservations, RiskEngine
@@ -127,10 +130,16 @@ class PaperBroker:
     # ------------------------------------------------------------------
     # session lifecycle
     # ------------------------------------------------------------------
-    def open_session(self, day: date, view: PointInTimeView) -> None:
+    def open_session(
+        self,
+        day: date,
+        view: PointInTimeView,
+        corporate_actions: Sequence[CorporateAction] | None = None,
+    ) -> None:
         self._session_index += 1
         self._session_day = day
         self._session_view = view
+        self._apply_corporate_actions(day, corporate_actions or ())
         marks = view.marks()
         opening_equity = self._value(self._previous_marks or marks)
         self._state.open_day(day, opening_equity)
@@ -145,6 +154,99 @@ class PaperBroker:
                 "simulated": True,
             },
         )
+
+    def _apply_corporate_actions(
+        self, day: date, actions: Sequence[CorporateAction]
+    ) -> None:
+        """Book every action effective today, before opening equity is read.
+
+        The booking uses the prior RAW close. Every action also rescales that
+        stored close (a dividend by the cash paid), so opening equity, peak
+        equity, the daily-loss breaker and the fill model's previous_close see
+        a continuous series instead of a crash or a fake gain. A split also
+        expires the day orders sized in pre-split shares; the strategy
+        re-signals later. An action already evaluated is skipped whole, so a
+        replay cannot rescale a second time.
+        """
+        for action in actions:
+            if action.effective_date != day:
+                continue
+            if action.action_id in self._portfolio._applied_action_ids:
+                continue
+            stored = self._previous_marks.get(action.symbol)
+            prior_close = stored if stored is not None else self._prior_bar_close(
+                action.symbol, day
+            )
+            if prior_close is None:
+                if self._portfolio.quantity_of(action.symbol) != 0:
+                    raise ValidationError(
+                        f"{action.action_id}: {action.symbol} is held but no close before "
+                        f"{day} is known, so the action cannot be booked"
+                    )
+                self._portfolio._applied_action_ids.add(action.action_id)
+                booking = None
+                new_mark = None
+            else:
+                if action.action_type == "split":
+                    new_mark = prior_close * action.denominator / action.numerator
+                else:
+                    new_mark = prior_close - action.cash_per_share
+                    if new_mark <= ZERO:
+                        raise ValidationError(
+                            f"{action.action_id}: dividend {action.cash_per_share} is not "
+                            f"below the prior close {prior_close}"
+                        )
+                new_mark = new_mark.quantize(PRICE_PRECISION, rounding=ROUND_HALF_UP)
+                booking = apply_corporate_action(self._portfolio, action, prior_close)
+            if stored is not None:
+                self._previous_marks[action.symbol] = new_mark
+            payload = {
+                "action_id": action.action_id,
+                "symbol": action.symbol,
+                "kind": action.kind,
+                "shares_before": booking.shares_before if booking else 0,
+                "shares_after": booking.shares_after if booking else 0,
+                "cash_delta": booking.cash_delta if booking else ZERO,
+                "cash_in_lieu": booking.cash_in_lieu if booking else ZERO,
+                "residual": booking.residual if booking else ZERO,
+                "realized_pnl_delta": booking.realized_pnl_delta if booking else ZERO,
+                "simulated": True,
+            }
+            if action.action_type == "dividend":
+                payload["note"] = "pay date unknown; booked on ex-date"
+            self._ledger.append(EventType.CORPORATE_ACTION, day, payload)
+            if action.action_type == "split":
+                self._expire_pending(day, action)
+
+    def _prior_bar_close(self, symbol: str, day: date) -> Decimal | None:
+        """The raw close of the last bar strictly before `day`, from the view.
+
+        A restarted broker has no stored marks. The view is point-in-time, so
+        this reads nothing from the future.
+        """
+        earlier = [b for b in self._session_view.bars(symbol) if b.trade_date < day]
+        return earlier[-1].close if earlier else None
+
+    def _expire_pending(self, day: date, action: CorporateAction) -> None:
+        still_pending: list[tuple[int, Order]] = []
+        for submitted_index, order in self._pending:
+            if order.symbol != action.symbol:
+                still_pending.append((submitted_index, order))
+                continue
+            self._release_reservation(order, self._session_view)
+            self._ledger.append(
+                EventType.ORDER_EXPIRED,
+                day,
+                {
+                    "order_id": order.order_id,
+                    "symbol": order.symbol,
+                    "quantity": order.quantity,
+                    "detail": f"{action.kind} {action.action_id} effective today; "
+                    "order was sized in pre-action shares, expired",
+                },
+            )
+            self._log_order(order, OrderStatus.EXPIRED)
+        self._pending = still_pending
 
     def settle(self, day: date, view: PointInTimeView) -> list:
         """Fill every eligible pending order against today's bar.

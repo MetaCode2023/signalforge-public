@@ -35,6 +35,8 @@ class EventType(str, Enum):
     BREAKER_TRIPPED = "BREAKER_TRIPPED"
     STRATEGY_OVERRIDE = "STRATEGY_OVERRIDE"
     """An UNAPPROVED strategy was run on an explicit operator override."""
+    CORPORATE_ACTION = "CORPORATE_ACTION"
+    """A split, adjustment or dividend was booked against the book at the open."""
 
 
 def _canonical(value: Any) -> Any:

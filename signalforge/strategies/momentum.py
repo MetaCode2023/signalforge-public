@@ -10,6 +10,7 @@ from signalforge.core.interfaces import Signal, SignalDirection
 from signalforge.strategies.base import (
     WEIGHT_QUANT,
     BaseStrategy,
+    normalise_symbols,
     require_positive_int,
     require_weight,
 )
@@ -25,6 +26,7 @@ class CrossSectionalMomentum(BaseStrategy):
         top_n: int,
         target_weight_total: Decimal,
         min_history_days: int,
+        symbols=None,
     ) -> None:
         self.lookback_days = require_positive_int("lookback_days", lookback_days)
         if isinstance(skip_days, bool) or not isinstance(skip_days, int) or skip_days < 0:
@@ -33,21 +35,27 @@ class CrossSectionalMomentum(BaseStrategy):
         self.top_n = require_positive_int("top_n", top_n)
         self.target_weight_total = require_weight("target_weight_total", target_weight_total)
         self.min_history_days = require_positive_int("min_history_days", min_history_days)
+        self.symbols = None if symbols is None else normalise_symbols(symbols)
         self.required_bars = max(self.min_history_days, self.lookback_days + self.skip_days + 1)
         self.warmup_days = self.required_bars
 
     def parameters(self) -> dict[str, object]:
-        return {
+        params: dict[str, object] = {
             "lookback_days": self.lookback_days,
             "skip_days": self.skip_days,
             "top_n": self.top_n,
             "target_weight_total": self.target_weight_total,
             "min_history_days": self.min_history_days,
         }
+        if self.symbols is not None:
+            params["symbols"] = self.symbols
+        return params
 
     def _signals(self, view: PointInTimeView) -> list[Signal]:
         ranked: list[tuple[Decimal, str]] = []
         for symbol in view.cross_section():
+            if self.symbols is not None and symbol not in self.symbols:
+                continue
             if not view.has_history(symbol, self.required_bars):
                 continue
             closes = view.adjusted_closes(symbol, self.lookback_days + self.skip_days + 1)

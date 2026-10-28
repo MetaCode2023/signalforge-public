@@ -59,7 +59,7 @@ def test_real_ingestion_is_timestamped_deduplicated_and_reconnected(tmp_path):
 
 
 def test_disabled_provider_refused_without_fetching(tmp_path):
-    config = CollectorConfig(provider="tiingo", series_ids=(), symbols=("AAPL",))
+    config = CollectorConfig(provider="alphavantage", series_ids=(), symbols=("AAPL",))
     with pytest.raises(ValueError, match="active and enabled"):
         build_task(config, tmp_path / "unused.duckdb")
     assert not (tmp_path / "unused.duckdb").exists()

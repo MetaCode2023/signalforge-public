@@ -177,3 +177,30 @@ def _config_bundle():
     return ConfigBundle(
         research=_config(), risk=RiskConfig(), data_sources=load_data_sources()
     )
+
+
+class TestUniverseDashboard:
+    def test_dashboard_renders_a_universe_run(self, tmp_path):
+        from signalforge.config.models import ConfigBundle, RiskConfig, load_data_sources
+        from signalforge.research_cli import write_dashboard_for
+        from tests.test_ohlcv_research import research, seed_universe
+
+        w = Warehouse(str(tmp_path / "u.duckdb"))
+        try:
+            seed_universe(w)
+            output = run_research(
+                w, research(), symbols=["AAA", "BBB", "CCC"], benchmark="SPY",
+                source="fixture",
+            )
+            bundle = ConfigBundle(
+                research=research(), risk=RiskConfig(), data_sources=load_data_sources()
+            )
+            html = write_dashboard_for(output, w, bundle, tmp_path / "u.html").read_text(
+                encoding="utf-8"
+            )
+        finally:
+            w.close()
+        assert "AAA, BBB, CCC" in html
+        assert "SPY" in html
+        assert "SURVIVORSHIP BIAS" in html
+        assert "PROXY STUDY" not in html

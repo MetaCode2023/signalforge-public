@@ -44,6 +44,36 @@ CLOSE_ONLY_NOTE = (
     "and limit orders cannot be evaluated against a real high or low."
 )
 
+SURVIVORSHIP_NOTE = (
+    "SURVIVORSHIP BIAS: this universe is today's surviving large caps, chosen "
+    "in hindsight. Companies that failed, were delisted or were acquired over "
+    "the same period are absent by construction, so every figure here is "
+    "flattered relative to what could have been selected at the time."
+)
+
+ADJUSTED_BASIS_NOTE = (
+    "ADJUSTED PRICE BASIS: orders are sized, filled and marked on split- and "
+    "dividend-adjusted prices so a held position survives corporate actions. "
+    "Early adjusted price levels and per-share commissions are not historical: "
+    "a 2005 fill is priced at today's adjusted level, so the per-share "
+    "commission and the minimum commission are charged against prices and "
+    "share counts that never traded. This note supersedes the engine's generic "
+    "warning that a holding carried through a split would be mis-valued: that "
+    "applies to raw prices only, and on this basis a split is already folded "
+    "into the price history."
+)
+
+EXPOSURE_MISMATCH_NOTE = (
+    "EXPOSURE MISMATCH: the per-name strategies hold up to 5% PER SYMBOL across "
+    "the universe (up to roughly 100% gross), while the benchmark holds 5% in a "
+    "single ETF. Benchmark-relative figures therefore partly reflect how much "
+    "capital was deployed, not skill. Read the capital-deployed column beside "
+    "every return."
+)
+
+PRICE_BASES = ("raw", "adjusted")
+PRICE_QUANT = Decimal("0.000001")
+
 
 VOLATILITY_REGIMES = ("low_vol", "mid_vol", "high_vol")
 REGIME_WARMUP_SESSIONS = 252
@@ -186,8 +216,34 @@ GAP_DECLARE_DAYS = 60
 GAP_REFUSE_DAYS = 365
 
 
+def _adjusted(bar: Bar) -> Bar:
+    ratio = bar.adjustment_ratio
+    if ratio is None:
+        return bar
+    o, h, low, c = (
+        (x * ratio).quantize(PRICE_QUANT)
+        for x in (bar.open, bar.high, bar.low, bar.close)
+    )
+    return Bar(
+        symbol=bar.symbol,
+        trade_date=bar.trade_date,
+        open=o,
+        high=max(h, o, c),
+        low=min(low, o, c),
+        close=c,
+        volume=int((Decimal(bar.volume) / ratio).to_integral_value()),
+        adj_close=c,
+        source=bar.source,
+        volume_known=bar.volume_known,
+    )
+
+
 def ohlcv_history(
-    warehouse: Warehouse, symbols: list[str], sources: list[str] | None = None
+    warehouse: Warehouse,
+    symbols: list[str],
+    sources: list[str] | None = None,
+    *,
+    price_basis: str = "raw",
 ) -> HistoryBundle:
     """Build a history from real per-symbol OHLCV stored in the warehouse.
 
@@ -198,7 +254,15 @@ def ohlcv_history(
     across that hole is meaningless while looking exactly like a real number.
 
     Pass `sources` to select one dataset deliberately.
+
+    `price_basis="adjusted"` scales open/high/low/close by each bar's
+    adj_close/close ratio (volume by its inverse), so a split is not a crash.
+    Bars with no adj_close stay raw and are named in a limitation note.
     """
+    if price_basis not in PRICE_BASES:
+        raise ValidationError(
+            f"unknown price_basis {price_basis!r}; expected one of {list(PRICE_BASES)}"
+        )
     bars = warehouse.load_bars(symbols=symbols)
     if sources is not None:
         allowed = set(sources)
@@ -250,12 +314,34 @@ def ohlcv_history(
             "Some bars carry no adjusted close, so dividends are not reflected "
             "for those symbols."
         )
+    basis = ""
+    if price_basis == "adjusted":
+        unadjusted = sorted({b.symbol for b in bars if b.adj_close is None})
+        partial = sorted(
+            s for s in unadjusted
+            if any(b.symbol == s and b.adj_close is not None for b in bars)
+        )
+        if partial:
+            raise ValidationError(
+                f"{summarise_symbols(partial)} carry adj_close on some bars but not "
+                "others; scaling only part of a symbol's history would put a "
+                "price discontinuity inside it. Fix or exclude the symbol."
+            )
+        if unadjusted:
+            notes.append(
+                f"{summarise_symbols(unadjusted)} carry no adj_close on some bars; "
+                "those bars stay on RAW prices inside an adjusted-basis run."
+            )
+        bars = [_adjusted(b) for b in bars]
+        notes.append(ADJUSTED_BASIS_NOTE)
+        basis = ", adjusted price basis"
     return HistoryBundle(
         history=PriceHistory.from_bars(bars),
         limitations=tuple(notes),
         description=(
             f"{len(bars)} OHLCV bars for {len(set(b.symbol for b in bars))} symbols "
             f"from {', '.join(sources)}, {days[0].isoformat()} to {days[-1].isoformat()}"
+            f"{basis}"
         ),
     )
 
@@ -268,12 +354,23 @@ def load_index_bundle(warehouse: Warehouse, series_id: str) -> HistoryBundle:
 # ----------------------------------------------------------------------
 # The baseline suite
 # ----------------------------------------------------------------------
-def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
+def baseline_specs(
+    symbol: str,
+    *,
+    universe: tuple[str, ...] | None = None,
+    benchmark: str | None = None,
+) -> list[tuple[str, str, dict]]:
     """The four baselines plus the benchmark, as (label, strategy_id, params).
+
+    With `universe`, the symbol-taking strategies trade that universe and the
+    buy-and-hold benchmark holds `benchmark` instead.
 
     Parameters are deliberately conventional textbook values, chosen before
     looking at any result, so that the first pass is not already a fitted one.
     """
+    traded = (symbol,) if universe is None else tuple(universe)
+    momentum_scope = {} if universe is None else {"symbols": traded}
+    held = (symbol,) if universe is None else (benchmark,)
     return [
         (
             "MA trend 50/200",
@@ -282,7 +379,7 @@ def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
                 "fast_window": 50,
                 "slow_window": 200,
                 "target_weight": Decimal("0.05"),
-                "symbols": (symbol,),
+                "symbols": traded,
             },
         ),
         (
@@ -294,6 +391,7 @@ def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
                 "top_n": 1,
                 "target_weight_total": Decimal("0.05"),
                 "min_history_days": 150,
+                **momentum_scope,
             },
         ),
         (
@@ -307,7 +405,7 @@ def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
                 "exit_z": Decimal("0"),
                 "target_weight": Decimal("0.05"),
                 "max_holding_days": 20,
-                "symbols": (symbol,),
+                "symbols": traded,
             },
         ),
         (
@@ -320,15 +418,57 @@ def baseline_specs(symbol: str) -> list[tuple[str, str, dict]]:
                 "vol_window": 20,
                 "max_weight": Decimal("0.05"),
                 "annualisation_factor": 252,
-                "symbols": (symbol,),
+                "symbols": traded,
             },
         ),
         (
             "Buy and hold (benchmark)",
             "buy_and_hold",
-            {"symbols": (symbol,), "target_weight": Decimal("0.05")},
+            {"symbols": held, "target_weight": Decimal("0.05")},
         ),
     ]
+
+
+def coverage_notes(
+    history: PriceHistory,
+    splits,
+    benchmark: str,
+    *,
+    universe: tuple[str, ...] | None = None,
+) -> list[str]:
+    """Per-window coverage: who has no bars, who lists mid-window, and when
+    the benchmark starts. Late listings are a silent no-op in the engine, so
+    they have to be said out loud here."""
+    windows = (
+        ("TRAIN", splits.train_start, splits.train_end,
+         " (indicative only: most names are absent for much of it)"),
+        ("VALIDATION", splits.validation_start, splits.validation_end, ""),
+    )
+    absent = sorted(set(universe or ()) - set(history.symbols))
+    notes: list[str] = []
+    for label, start, end, caveat in windows:
+        empty: list[str] = list(absent)
+        late: list[str] = []
+        for symbol in history.symbols:
+            if symbol == benchmark:
+                continue
+            in_window = [
+                b.trade_date for b in history.bars_for(symbol) if start <= b.trade_date <= end
+            ]
+            if not in_window:
+                empty.append(symbol)
+            elif history.bars_for(symbol)[0].trade_date > start:
+                late.append(f"{symbol} from {in_window[0].isoformat()}")
+        bench_bars = history.bars_for(benchmark)
+        parts = [f"COVERAGE {label} {start} .. {end}{caveat}."]
+        if empty:
+            parts.append(f"No bars in this window: {', '.join(sorted(empty))}.")
+        if late:
+            parts.append(f"Listing mid-window: {', '.join(late)}.")
+        if bench_bars:
+            parts.append(f"Benchmark {benchmark} from {bench_bars[0].trade_date.isoformat()}.")
+        notes.append(" ".join(parts))
+    return notes
 
 
 def load_regime_labels(

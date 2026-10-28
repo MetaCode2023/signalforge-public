@@ -49,8 +49,8 @@ providers:
 
   tiingo:
     kind: bars
-    status: pending_key
-    enabled: false
+    status: active
+    enabled: true
     requires_key: true
     api_key_env: "TIINGO_API_KEY"
     base_url: "https://api.tiingo.com/tiingo/daily"

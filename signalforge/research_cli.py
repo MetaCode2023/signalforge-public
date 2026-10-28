@@ -1,6 +1,7 @@
 """The research entry point.
 
     python -m signalforge.research_cli [--run-holdout] [--no-dashboard]
+        [--series ID | --symbols A,B | --universe] [--benchmark SPY] [--source tiingo]
 
 Runs the baseline suite over the train and validation windows, records every
 run in the experiment registry, and renders the operator dashboard from the
@@ -20,12 +21,16 @@ from decimal import Decimal
 from pathlib import Path
 
 from signalforge.config.models import ConfigBundle, ResearchConfig, load_all
-from signalforge.core.errors import SignalForgeError
+from signalforge.core.errors import SignalForgeError, ValidationError
 from signalforge.data.storage import Warehouse
 from signalforge.learning.registry import ExperimentRegistry
 from signalforge.pipeline import (
+    EXPOSURE_MISMATCH_NOTE,
+    SURVIVORSHIP_NOTE,
+    HistoryBundle,
     ResearchRun,
     baseline_specs,
+    coverage_notes,
     load_index_bundle,
     load_regime_labels,
     run_window,
@@ -38,6 +43,13 @@ HOLDOUT_NOT_CONSUMED = (
     "The held-out test window was NOT run. It is reported as untouched so that "
     "the one honest out-of-sample number this project has stays unspent. Pass "
     "--run-holdout to consume it; the registry then refuses a second look."
+)
+
+OHLCV_HOLDOUT_REFUSED = (
+    "--run-holdout is refused for OHLCV runs: the hold-out is keyed to the dataset "
+    "fingerprint, and the warehouse bars and their adjustment factors are revised "
+    "by the provider, so there is no revision-stable dataset ID to key a single "
+    "look against. Nothing was run and the registry is unchanged."
 )
 
 
@@ -62,7 +74,21 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m signalforge.research_cli")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--series", default="NASDAQCOM")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--series", default="NASDAQCOM")
+    mode.add_argument(
+        "--symbols",
+        type=lambda v: [s.strip().upper() for s in v.split(",") if s.strip()],
+        default=None,
+        help="comma-separated symbols to trade from the warehouse OHLCV bars",
+    )
+    mode.add_argument(
+        "--universe",
+        action="store_true",
+        help="trade the research.yaml universe from the warehouse OHLCV bars",
+    )
+    parser.add_argument("--benchmark", default="SPY")
+    parser.add_argument("--source", default="tiingo")
     parser.add_argument(
         "--run-holdout",
         action="store_true",
@@ -78,12 +104,30 @@ def run_research(
     research: ResearchConfig,
     *,
     series_id: str = "NASDAQCOM",
+    symbols: list[str] | None = None,
+    benchmark: str = "SPY",
+    source: str | None = None,
     run_holdout: bool = False,
     registry: ExperimentRegistry | None = None,
 ) -> ResearchOutput:
     from signalforge.config.models import RiskConfig
 
-    bundle = load_index_bundle(warehouse, series_id)
+    if symbols is not None:
+        if not symbols:
+            raise ValidationError(
+                "symbols is empty: refusing to fall back to the series path"
+            )
+        if run_holdout:
+            raise ValidationError(OHLCV_HOLDOUT_REFUSED)
+        if source is None:
+            raise ValidationError(
+                "an OHLCV run needs an explicit source: the warehouse can hold the "
+                "same symbol from several datasets and mixing them is refused"
+            )
+        bundle, specs = _ohlcv_bundle(warehouse, symbols, benchmark, source)
+    else:
+        bundle = load_index_bundle(warehouse, series_id)
+        specs = baseline_specs(bundle.history.symbols[0])
     config = ConfigBundle(
         research=research,
         risk=RiskConfig(),
@@ -98,7 +142,7 @@ def run_research(
 
     windows = ["train", "validation"]
     if run_holdout:
-        spent = _holdout_already_spent(registry, bundle, config)
+        spent = _holdout_already_spent(registry, bundle, config, specs)
         if spent:
             output.notes.append(
                 "The held-out test window was NOT run: it has ALREADY been spent for "
@@ -111,7 +155,15 @@ def run_research(
             windows.append("test")
 
     for window in windows:
-        run = run_window(bundle, config, window, regime_labels=regime_labels)
+        run = run_window(bundle, config, window, specs=specs, regime_labels=regime_labels)
+        if symbols is not None:
+            run.limitations.extend(
+                n
+                for n in coverage_notes(
+                    bundle.history, config.research.splits, benchmark, universe=tuple(symbols)
+                )
+                if n.split()[1].lower() == window
+            )
         output.runs.append(run)
         output.experiment_ids.extend(_record(registry, run, config))
 
@@ -126,8 +178,34 @@ def run_research(
     return output
 
 
+def _ohlcv_bundle(
+    warehouse: Warehouse,
+    symbols: list[str],
+    benchmark: str,
+    source: str,
+) -> tuple[HistoryBundle, list[tuple[str, str, dict]]]:
+    from signalforge.pipeline import ohlcv_history
+
+    wanted = sorted(set(symbols) | {benchmark})
+    bundle = ohlcv_history(warehouse, wanted, sources=[source], price_basis="adjusted")
+    if benchmark not in bundle.history.symbols:
+        raise ValidationError(
+            f"benchmark {benchmark} has no {source} bars in the warehouse; "
+            "the benchmark must be ingested before an OHLCV run can be compared to it"
+        )
+    bundle = HistoryBundle(
+        history=bundle.history,
+        limitations=(*bundle.limitations, SURVIVORSHIP_NOTE, EXPOSURE_MISMATCH_NOTE),
+        description=bundle.description,
+    )
+    traded = tuple(s for s in symbols if s != benchmark)
+    return bundle, baseline_specs(
+        bundle.history.symbols[0], universe=traded, benchmark=benchmark
+    )
+
+
 def _holdout_already_spent(
-    registry: ExperimentRegistry, bundle, config: ConfigBundle
+    registry: ExperimentRegistry, bundle, config: ConfigBundle, specs
 ) -> list[str]:
     """Names of the baseline strategies whose hold-out look is already spent.
 
@@ -143,9 +221,8 @@ def _holdout_already_spent(
     fingerprint = BacktestEngine.fingerprint(
         bundle.history, splits.test_start, splits.test_end
     )
-    symbol = bundle.history.symbols[0]
     spent: list[str] = []
-    for label, strategy_id, params in baseline_specs(symbol):
+    for label, strategy_id, params in specs:
         if registry.holdout_spent(
             strategy_name=strategy_id,
             parameters=_stringify(params),
@@ -294,18 +371,35 @@ def format_table(output: ResearchOutput) -> str:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    ohlcv = args.symbols is not None or args.universe
+    if ohlcv and args.run_holdout:
+        print(OHLCV_HOLDOUT_REFUSED)
+        return 2
     if not args.db.exists():
         print(f"no warehouse at {args.db}; run the archive ingestion first")
         return 2
     config = load_all()
+    symbols = list(config.research.universe) if args.universe else args.symbols
+    if ohlcv and not symbols:
+        print("refused: no symbols to trade (--symbols is empty or research.universe is empty)")
+        return 2
     warehouse = Warehouse(str(args.db))
     try:
-        output = run_research(
-            warehouse,
-            config.research,
-            series_id=args.series,
-            run_holdout=args.run_holdout,
-        )
+        try:
+            output = run_research(
+                warehouse,
+                config.research,
+                series_id=args.series,
+                symbols=symbols,
+                benchmark=args.benchmark,
+                source=args.source,
+                run_holdout=args.run_holdout,
+            )
+        except ValidationError as exc:
+            if not ohlcv:
+                raise
+            print(f"refused: {exc}")
+            return 2
         print(format_table(output))
         print()
         for note in output.notes:

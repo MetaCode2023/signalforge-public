@@ -37,9 +37,6 @@ universe:
   - KO
   - PG
   - CAT
-  - SPY
-  - QQQ
-  - IWM
 
 execution:
   commission_per_share: "0.005"

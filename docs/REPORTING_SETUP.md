@@ -40,8 +40,10 @@ to work around these tooling limits.
 Once outbound access and the schema are available:
 
 1. Load the three variables privately from `.env` into the sender process.
-2. Serialize the allowlisted test payload once, with `is_test=1` and a run ID of
-   `e2e-test-<local YYYY-MM-DD>`.
+2. Serialize the allowlisted test payload once, with a run ID of
+   `e2e-test-<local YYYY-MM-DD>`. Do NOT send an `is_test` field: the envelope is
+   strict and rejects it. The server marks a record as test data from the run ID
+   prefix (`e2e-test-`, `test-` or `smoke-`).
 3. Generate the current Unix timestamp and a fresh nonce for every request. Sign
    the exact UTF-8 bytes of `v1:<timestamp>:<nonce>:<raw body>` with HMAC-SHA256,
    using `SIGNALFORGE_INGEST_SECRET` as the key.
@@ -69,3 +71,31 @@ path. Keep `signalforge/paper/**`, the broker, strategies, and risk engine uncha
   run. No strategy approval or override was granted by this reporting task.
 - Show Austin the concrete continuous-operation plan before enabling any loop,
   scheduled task, service, or daemon. None is currently enabled by this work.
+
+## Command-line sender (implemented)
+
+Code: `signalforge/reports/events.py` (builders and strict local validator),
+`signalforge/reports/sender.py` (signed POST), `signalforge/report_cli.py`.
+It sits outside the socket-free paper path and is fixed to
+`https://signalforge-api.example.com/v1/ingest` (no redirects followed).
+
+- `python -m signalforge.report_cli smoke` sends one heartbeat with run ID
+  `e2e-test-<YYYY-MM-DD>` and prints the outcome. Needs the three `.env` variables.
+- `python -m signalforge.report_cli push [--db PATH] [--dry-run]` builds data_health,
+  backtest, paper_session and heartbeat events (run ID `research-<YYYYMMDD>`) from the
+  warehouse opened read-only, validates all of them locally (any invalid event: exit 2,
+  nothing sent), then sends in that order. Exit 0 only if every event is 202 or
+  `duplicate_event`. `--dry-run` prints the events and needs no credentials or network.
+- Event IDs are deterministic (uuid5 of the natural key), so resending is safe: the
+  server answers `duplicate_event`, which counts as delivered.
+- Only train and validation experiments are exported; the test (hold-out) window never is.
+  Dataset fingerprints are shortened to 12 hex characters.
+- paper_session events are skipped with a warning because realized/unrealized PnL and
+  positions are not persisted in `paper_sessions`.
+- Backtest events: one per experiment (event_id = uuid5 of experiment_id), only for the newest dataset
+  fingerprint per dataset kind (series id, or `ohlcv<N>-<source>`) and window. strategy_id is
+  `<kind>.<strategy-params>`. Rows without a valid recorded commit sha are skipped, never given HEAD.
+- `.env` is read as UTF-8 (BOM tolerated); only the three variables are kept; inline comments
+  (`KEY=value # note`) are NOT supported.
+- A missing `.env` variable fails closed and names only the variable. Credentials are
+  never printed, logged or placed in exception text.

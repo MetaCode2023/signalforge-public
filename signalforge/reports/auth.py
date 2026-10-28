@@ -9,8 +9,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-import secrets
 import time
+import uuid
 from dataclasses import dataclass, field
 
 
@@ -31,7 +31,7 @@ def authentication_headers(body: bytes, credentials: ReportingCredentials, *, ti
     if not isinstance(body, bytes):
         raise TypeError("sign the exact serialized UTF-8 bytes")
     timestamp = int(time.time()) if timestamp is None else timestamp
-    nonce = secrets.token_hex(16) if nonce is None else nonce
+    nonce = str(uuid.uuid4()) if nonce is None else nonce
     if type(timestamp) is not int or timestamp < 0:
         raise ValueError("timestamp must be a nonnegative Unix integer")
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", nonce):

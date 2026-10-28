@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
 
 from signalforge.core.errors import AccountingError, ValidationError
 
@@ -228,6 +229,88 @@ class Fill:
         return self.gross_value - self.fees
 
 
+CLEAN_SPLIT_MAX_DENOMINATOR = 20
+CLEAN_SPLIT_TOLERANCE = Fraction(2, 1_000_000)
+ACTION_KINDS = ("split", "adjustment", "dividend")
+
+
+def ratio_to_fraction(ratio: Decimal) -> tuple[int, int, str]:
+    """Turn a stored ratio into (numerator, denominator, kind).
+
+    Providers publish ratios at six decimals, so a true 7:1 arrives as
+    7.000007. A small-denominator fraction within a relative 2e-6 is a clean
+    "split". Anything else (spinoffs, special factors such as 0.9535) is an
+    "adjustment" carried as the exact decimal fraction: never approximated.
+    """
+    if not isinstance(ratio, Decimal) or ratio <= ZERO:
+        raise ValidationError(f"split ratio must be a positive Decimal, got {ratio!r}")
+    exact = Fraction(str(ratio))
+    clean = exact.limit_denominator(CLEAN_SPLIT_MAX_DENOMINATOR)
+    if abs(clean - exact) <= exact * CLEAN_SPLIT_TOLERANCE:
+        return clean.numerator, clean.denominator, "split"
+    return exact.numerator, exact.denominator, "adjustment"
+
+
+@dataclass(frozen=True, slots=True)
+class CorporateAction:
+    """A split, spinoff/special-factor adjustment or cash dividend.
+
+    `action_type` is the stored type ("split" or "dividend"); `kind` also
+    separates a clean split from an "adjustment" so audit trails can label it.
+    For splits and adjustments, `numerator`/`denominator` is new shares per old
+    share, so a reverse split has numerator < denominator. For a dividend,
+    `cash_per_share` is paid on the ex-date.
+    """
+
+    symbol: str
+    effective_date: date
+    action_type: str
+    source: str
+    numerator: int | None = None
+    denominator: int | None = None
+    cash_per_share: Decimal | None = None
+    kind: str = ""
+
+    def __post_init__(self) -> None:
+        if self.action_type not in ("split", "dividend"):
+            raise ValidationError(f"{self.symbol}: unknown action type {self.action_type!r}")
+        if not self.kind:
+            object.__setattr__(self, "kind", self.action_type)
+        if self.kind not in ACTION_KINDS or (self.kind == "dividend") != (self.action_type == "dividend"):
+            raise ValidationError(
+                f"{self.symbol}: kind {self.kind!r} does not fit action type {self.action_type!r}"
+            )
+        if self.action_type == "split":
+            for label in ("numerator", "denominator"):
+                value = getattr(self, label)
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise ValidationError(
+                        f"{self.symbol} {self.effective_date}: {label} must be a positive int, "
+                        f"got {value!r}"
+                    )
+        elif not isinstance(self.cash_per_share, Decimal) or self.cash_per_share < ZERO:
+            raise ValidationError(
+                f"{self.symbol} {self.effective_date}: dividend cash must be a non-negative "
+                f"Decimal, got {self.cash_per_share!r}"
+            )
+
+    @classmethod
+    def split(cls, symbol: str, effective_date: date, ratio: Decimal, source: str) -> CorporateAction:
+        numerator, denominator, kind = ratio_to_fraction(ratio)
+        return cls(symbol, effective_date, "split", source,
+                   numerator=numerator, denominator=denominator, kind=kind)
+
+    @classmethod
+    def dividend(
+        cls, symbol: str, effective_date: date, cash_per_share: Decimal | None, source: str
+    ) -> CorporateAction:
+        return cls(symbol, effective_date, "dividend", source, cash_per_share=cash_per_share)
+
+    @property
+    def action_id(self) -> str:
+        return f"{self.symbol}:{self.effective_date.isoformat()}:{self.action_type}"
+
+
 @dataclass(slots=True)
 class Position:
     """A long-only position tracked at average cost.
@@ -291,6 +374,7 @@ class Portfolio:
     total_fees: Decimal = ZERO
     total_slippage_cost: Decimal = ZERO
     _applied_fill_ids: set[str] = field(default_factory=set, repr=False)
+    _applied_action_ids: set[str] = field(default_factory=set, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.cash, Decimal):

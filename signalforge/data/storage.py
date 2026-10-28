@@ -11,8 +11,8 @@ from typing import Iterable
 import duckdb
 import pyarrow as pa
 
-from signalforge.core.errors import DataQualityError
-from signalforge.core.types import Bar, QualityStatus
+from signalforge.core.errors import DataQualityError, ValidationError
+from signalforge.core.types import Bar, CorporateAction, QualityStatus
 
 DEFAULT_PATH = Path("data") / "warehouse" / "signalforge.duckdb"
 
@@ -449,6 +449,54 @@ class Warehouse:
     def corporate_action_dates(self) -> set[tuple[str, date]]:
         rows = self.con.execute("SELECT symbol, effective_date FROM corporate_actions").fetchall()
         return {(s, d) for s, d in rows}
+
+    def load_corporate_actions(
+        self,
+        symbols: Iterable[str] | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        source: str | None = None,
+    ) -> list[CorporateAction]:
+        where, params = [], []
+        if symbols is not None:
+            symbols = list(symbols)
+            if not symbols:
+                return []
+            where.append(f"symbol IN ({', '.join('?' * len(symbols))})")
+            params += symbols
+        if start is not None:
+            where.append("effective_date >= ?")
+            params.append(start)
+        if end is not None:
+            where.append("effective_date <= ?")
+            params.append(end)
+        if source is not None:
+            where.append("source = ?")
+            params.append(source)
+        sql = "SELECT symbol, effective_date, action_type, ratio, cash_amount, source FROM corporate_actions"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY effective_date, symbol, action_type, source"
+        actions: dict[tuple, tuple[tuple, CorporateAction]] = {}
+        for symbol, effective_date, action_type, ratio, cash, src in self.con.execute(sql, params).fetchall():
+            if action_type == "split":
+                if ratio is None:
+                    raise ValidationError(f"{symbol} {effective_date}: split stored with no ratio")
+                action = CorporateAction.split(symbol, effective_date, ratio, src)
+            elif action_type == "dividend":
+                action = CorporateAction.dividend(symbol, effective_date, cash, src)
+            else:
+                raise ValidationError(f"{symbol} {effective_date}: unknown action type {action_type!r}")
+            values = (ratio, cash)
+            seen = actions.get((symbol, effective_date, action_type))
+            if seen is None:
+                actions[(symbol, effective_date, action_type)] = (values, action)
+            elif seen[0] != values:
+                raise ValidationError(
+                    f"{action.action_id}: sources disagree ({seen[1].source} {seen[0]} "
+                    f"vs {src} {values})"
+                )
+        return [action for _, action in actions.values()]
 
     def record_run(
         self, *, run_id, provider, started_at, finished_at, rows_in, rows_accepted,

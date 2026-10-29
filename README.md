@@ -1,5 +1,11 @@
 # SIGNALFORGE
 
+> **Research concluded 2026-10-29: frozen.** No strategy beat buy-and-hold on
+> walk-forward or the one-time held-out test, and the outside evidence says a
+> solo, data-heavy bot is very unlikely to. The "beat the market" goal is
+> stopped. The platform stays paper-only, green and reproducible as a record.
+> Read [`reports/FINAL_VERDICT.md`](reports/FINAL_VERDICT.md).
+
 A quantitative research and paper-trading platform for U.S. equities.
 
 **PAPER ONLY.** There is no live-order code path in this package, and the

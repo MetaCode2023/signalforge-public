@@ -1,5 +1,8 @@
 # SIGNALFORGE — Next Steps
 
+> **Superseded 2026-10-29 by [`FINAL_VERDICT.md`](FINAL_VERDICT.md).** The research
+> goal is frozen; the items below are kept as the record of where it stood.
+
 Generated 2026-10-26, revised 2026-10-27 after the overnight session.
 Ordered by what unlocks the most, not by effort.
 

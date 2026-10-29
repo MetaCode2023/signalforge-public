@@ -169,3 +169,5 @@ decisions are not re-litigated from memory later.
 data does and does not support. The short version: there is no per-symbol
 OHLCV history available from any keyless, terms-clean source, so the current
 results are a single-instrument proxy study.
+
+A private D1 mirror of the market-data tables (not for public access) is described in [`docs/D1_MARKET_MIRROR.md`](docs/D1_MARKET_MIRROR.md).

@@ -33,3 +33,6 @@ dashboard/build/
 data/archive/**
 !data/archive/.gitkeep
 !data/archive/README.md
+
+# Local staging for the D1 market-data mirror (SQL files, deleted after import).
+data/mirror/

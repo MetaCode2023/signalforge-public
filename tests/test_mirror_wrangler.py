@@ -168,3 +168,44 @@ def test_timeout_becomes_wrangler_error():
         make(run).query("SELECT 1")
     with pytest.raises(w.WranglerError, match="timed out"):
         make(run).execute_file("x.sql")
+
+
+AUTH_ERROR = json.dumps({"error": {"code": 10000, "notes": [{"text": "Authentication error [code: 10000]"}]}})
+
+
+class SequenceRun:
+    def __init__(self, *results):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv)
+        stdout, code = self.results.pop(0)
+        return SimpleNamespace(stdout=stdout, returncode=code, stderr="")
+
+
+def test_an_auth_error_is_retried_once_so_an_expired_login_can_refresh():
+    run = SequenceRun((AUTH_ERROR, 1), (ok([{"n": 1}]), 0))
+    assert make(run).query("SELECT 1 AS n") == [{"n": 1}]
+    assert len(run.calls) == 2
+
+
+def test_an_auth_error_on_a_file_import_is_retried_once():
+    run = SequenceRun((AUTH_ERROR, 1), ("{}", 0))
+    make(run).execute_file("x.sql")
+    assert len(run.calls) == 2
+
+
+def test_a_second_auth_error_is_raised():
+    run = SequenceRun((AUTH_ERROR, 1), (AUTH_ERROR, 1))
+    with pytest.raises(w.WranglerError, match="10000"):
+        make(run).query("SELECT 1 AS n")
+    assert len(run.calls) == 2
+
+
+def test_other_errors_are_not_retried():
+    other = json.dumps({"error": {"code": 7500, "notes": [{"text": "SQLITE_ERROR"}]}})
+    run = SequenceRun((other, 1), (ok([]), 0))
+    with pytest.raises(w.WranglerError, match="7500"):
+        make(run).query("SELECT 1 AS n")
+    assert len(run.calls) == 1

@@ -26,6 +26,9 @@ FILE_FLAGS = ["--remote"]
 FILE_TAIL = ["--yes"]
 
 
+AUTH_ERROR_CODE = "code 10000:"
+
+
 class WranglerError(RuntimeError):
     pass
 
@@ -76,16 +79,22 @@ class Wrangler:
         return [self._npx, "wrangler", "d1", "execute", DATABASE, *tail]
 
     def _exec(self, argv: list[str], timeout: int):
-        try:
-            proc = self._run(
-                argv, env=self._env(), capture_output=True, text=True, encoding="utf-8",
-                shell=False, stdin=subprocess.DEVNULL, timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise WranglerError(f"wrangler timed out after {timeout}s") from None
-        if proc.returncode != 0:
-            raise WranglerError(self._failure(proc))
-        return proc.stdout or ""
+        # The OAuth access token lasts an hour. A call that lands as it expires
+        # is rejected with 10000 before wrangler refreshes it, so retry once.
+        # Nothing ran on an auth failure, and every write is an idempotent upsert.
+        for attempt in (1, 2):
+            try:
+                proc = self._run(
+                    argv, env=self._env(), capture_output=True, text=True, encoding="utf-8",
+                    shell=False, stdin=subprocess.DEVNULL, timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                raise WranglerError(f"wrangler timed out after {timeout}s") from None
+            if proc.returncode == 0:
+                return proc.stdout or ""
+            failure = self._failure(proc)
+            if attempt == 2 or AUTH_ERROR_CODE not in failure:
+                raise WranglerError(failure)
 
     def _failure(self, proc) -> str:
         detail = ""

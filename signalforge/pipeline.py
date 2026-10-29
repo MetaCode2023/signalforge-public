@@ -74,6 +74,13 @@ EXPOSURE_MISMATCH_NOTE = (
 PRICE_BASES = ("raw", "adjusted")
 PRICE_QUANT = Decimal("0.000001")
 
+# Same threshold the paper runner refuses on (UNRECORDED_JUMP_RATIO). On the
+# adjusted basis a vendor split is already folded in, so a remaining one-day
+# move this large is a missing split, a bad print, or a real move nobody has
+# inspected. Two missing CVX splits once flipped a 34-year research result.
+ADJUSTED_JUMP_RATIO = Decimal("1.4")
+ADJUSTED_JUMPS_LISTED = 10
+
 
 VOLATILITY_REGIMES = ("low_vol", "mid_vol", "high_vol")
 REGIME_WARMUP_SESSIONS = 252
@@ -335,6 +342,43 @@ def _apply_manual_splits(
     return out, notes
 
 
+def _unexplained_jump_note(warehouse: Warehouse, bars: list[Bar]) -> str | None:
+    """Name adjusted-close moves beyond ADJUSTED_JUMP_RATIO nobody has explained.
+
+    Run after manual splits are folded in, so a recorded split clears its own
+    jump. A move acknowledged with `Warehouse.acknowledge_price_move` is a
+    real move someone inspected and is not listed.
+    """
+    acknowledged = warehouse.price_move_acknowledgements()
+    series: dict[str, list[Bar]] = {}
+    for bar in bars:
+        series.setdefault(bar.symbol, []).append(bar)
+    found = []
+    for symbol in sorted(series):
+        ordered = sorted(series[symbol], key=lambda b: b.trade_date)
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous.close <= ZERO or current.close <= ZERO:
+                continue
+            move = max(current.close / previous.close, previous.close / current.close)
+            if move > ADJUSTED_JUMP_RATIO and (symbol, current.trade_date) not in acknowledged:
+                found.append(
+                    f"{symbol} {current.trade_date} ({previous.close} -> {current.close}, {move:.2f}x)"
+                )
+    if not found:
+        return None
+    listed = "; ".join(found[:ADJUSTED_JUMPS_LISTED])
+    more = len(found) - ADJUSTED_JUMPS_LISTED
+    return (
+        f"UNEXPLAINED ADJUSTED-PRICE JUMPS: {len(found)} one-day move(s) beyond "
+        f"{ADJUSTED_JUMP_RATIO}x on the adjusted basis with no recorded split or "
+        f"acknowledgement: {listed}" + (f"; and {more} more" if more > 0 else "") + ". "
+        "Each is a split the vendor missed, a bad print, or a real move nobody has "
+        "inspected, and any of the first two would be traded as a crash. Record a "
+        "missing split with Warehouse.record_manual_split, or an inspected real move "
+        "with Warehouse.acknowledge_price_move."
+    )
+
+
 def ohlcv_history(
     warehouse: Warehouse,
     symbols: list[str],
@@ -433,6 +477,9 @@ def ohlcv_history(
         bars, manual_notes = _apply_manual_splits(warehouse, bars)
         notes.append(ADJUSTED_BASIS_NOTE)
         notes.extend(manual_notes)
+        jump_note = _unexplained_jump_note(warehouse, bars)
+        if jump_note:
+            notes.append(jump_note)
         basis = ", adjusted price basis"
     return HistoryBundle(
         history=PriceHistory.from_bars(bars),

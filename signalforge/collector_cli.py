@@ -9,7 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from signalforge.data.collector import (
-    CollectionFailure, Collector, CollectorBusy, CollectorConfig, Snapshot, utcnow,
+    CollectionFailure, Collector, CollectorBusy, CollectorConfig, Snapshot, select_batch, utcnow,
 )
 
 
@@ -103,10 +103,12 @@ def build_task(config, db, *, archive_dir=None, clock=utcnow, session_factory=No
             else:
                 extra = {"session": session_factory()} if session_factory else {}
                 provider = provider_types[config.provider](policy, user_agent=sources.user_agent, clock=clock, **extra)
-                prior = [day for day in read_latest(warehouse).values() if day is not None]
+                latest = read_latest(warehouse)
+                items = config.items if config.provider == "fred" else select_batch(config, latest)
+                prior = [latest[item] for item in items if latest[item] is not None]
                 start = min([now.date(), *prior]) - timedelta(days=config.lookback_days)
                 kwargs = {"start": start, "end": now.date()}
-                kwargs["series_ids" if config.provider == "fred" else "symbols"] = list(config.items)
+                kwargs["series_ids" if config.provider == "fred" else "symbols"] = list(items)
             result = ingest(SafeProvider(provider), warehouse, clock=clock, as_of=now.date(), **kwargs)
             return Snapshot(latest=read_latest(warehouse), rows_accepted=result.rows_accepted,
                             rows_quarantined=result.rows_quarantined, inserted=result.inserted,

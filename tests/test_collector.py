@@ -12,7 +12,7 @@ from pathlib import Path
 from signalforge.collector_cli import load_config, parse_args
 from signalforge.data.collector import (
     CollectionFailure, Collector, CollectorBusy, CollectorConfig, Snapshot,
-    WarehouseLock, next_run,
+    WarehouseLock, next_run, select_batch,
 )
 
 
@@ -225,6 +225,42 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(free.symbols), 23)
         self.assertEqual(free.requests_per_day, 46)
         self.assertEqual(free.max_attempts, 1)
+        universe = load_config("config/collection-tiingo-universe.json")
+        self.assertEqual((universe.provider, len(universe.symbols), universe.batch_size), ("tiingo", 481, 45))
+        self.assertEqual(set(universe.priority_symbols), set(free.symbols))
+        # One run stays under Tiingo's 50/hour and a full day under 1,000.
+        self.assertLess(universe.request_cost, 50)
+        self.assertLess(universe.requests_per_day, 1000)
+        self.assertGreaterEqual(universe.requests_per_day // universe.request_cost * universe.batch_size, 481)
+
+    def test_batch_takes_never_fetched_then_stalest_then_priority(self):
+        config = CollectorConfig(provider="tiingo", series_ids=(), symbols=("A", "B", "C", "D", "E"),
+                                 priority_symbols=("D",), batch_size=3, requests_per_day=10)
+        latest = {"A": date(2026, 10, 27), "B": None, "C": date(2026, 10, 20),
+                  "D": date(2026, 10, 27), "E": date(2026, 10, 27)}
+        self.assertEqual(select_batch(config, latest), ("B", "C", "D"))
+        self.assertEqual(config.request_cost, 3)
+
+    def test_batch_rotation_reaches_every_symbol(self):
+        symbols = tuple(f"S{i:02d}" for i in range(10))
+        config = CollectorConfig(provider="tiingo", series_ids=(), symbols=symbols,
+                                 priority_symbols=("S09",), batch_size=4, requests_per_day=40)
+        latest = dict.fromkeys(symbols, date(2026, 10, 26))
+        fetched = []
+        for _ in range(3):
+            batch = select_batch(config, latest)
+            fetched.append(batch)
+            latest.update(dict.fromkeys(batch, date(2026, 10, 27)))
+        self.assertEqual(fetched, [("S09", "S00", "S01", "S02"), ("S03", "S04", "S05", "S06"),
+                                   ("S07", "S08", "S09", "S00")])
+        self.assertEqual(set(sum(fetched, ())), set(symbols))
+
+    def test_no_batch_fetches_every_symbol(self):
+        config = CollectorConfig(provider="tiingo", series_ids=(), symbols=("A", "B"), requests_per_day=2)
+        self.assertEqual(select_batch(config, {}), ("A", "B"))
+        self.assertEqual(config.request_cost, 2)
+        big = replace(config, batch_size=5)
+        self.assertEqual((select_batch(big, {}), big.request_cost), (("A", "B"), 2))
 
     def test_invalid_configuration_is_refused(self):
         invalid = [
@@ -239,6 +275,10 @@ class CollectorTests(unittest.TestCase):
             {"provider": "tiingo", "symbols": ["AAPL"]},
             {"provider": "local_archive", "symbols": ["NASDAQCOM"]},
             {"provider": "alphavantage", "series_ids": [], "symbols": ["AAPL"], "requests_per_day": 26},
+            {"batch_size": 2},
+            {"provider": "tiingo", "series_ids": [], "symbols": ["AAPL"], "batch_size": 0},
+            {"provider": "tiingo", "series_ids": [], "symbols": ["AAPL"], "batch_size": True},
+            {"provider": "tiingo", "series_ids": [], "symbols": ["AAPL"], "priority_symbols": ["MSFT"]},
         ]
         for changes in invalid:
             with self.subTest(changes=changes), self.assertRaises(ValueError):

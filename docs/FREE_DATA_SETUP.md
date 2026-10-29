@@ -25,6 +25,35 @@ daily budget is deliberately conservative; the collector does not implement
 an account-wide rolling hourly quota or know requests made by other clients.
 The provider is **still disabled** until local setup and access validation.
 
+### Keeping the full universe current
+
+`config/collection-tiingo-universe.json` covers the 481 symbols that were
+still trading at the Oct 28 2026 backfill. The 11 that had stopped updating
+(QRVO, AVB, EA, CTRA, SEE, HOLX, DAY, CMA, K, IPG, HES) and BK, whose history
+holds only five 2026 bars, are left out: a rotation picks the stalest symbols
+first, so a symbol that can never refresh would be fetched on every run.
+
+Each run fetches only `batch_size` (45) symbols: never-fetched first, then the
+oldest latest bar, with the 23 research names (`priority_symbols`) first among
+equally stale symbols. 45 stays under the 50-request hourly limit, the local
+990/day budget under the 1,000 daily limit, and eleven runs reach all 481.
+
+`scripts/signalforge-daily.cmd` runs one batch, so the research names refresh
+before the paper book trades. Register `scripts/signalforge-prices.cmd` to run
+hourly for the rest, starting an hour after the daily job so the two never
+share a clock hour:
+
+```bat
+schtasks /Create /TN "SignalForge Prices" /TR "C:\Users\you\repos\signalforge\scripts\signalforge-prices.cmd" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 19:30 /RI 60 /DU 12:00
+```
+
+That assumes the daily job runs at 18:30 Arizona time; shift both together.
+All thirteen runs fall inside one UTC day, well within the daily budget.
+
+Both scripts share one request budget file per warehouse. Running
+`collection-tiingo-free.json` by hand on the same day will report
+`budget_exhausted` once the rotation has used more than its 46-request cap.
+
 FRED is keyless and free, but NASDAQCOM and VIXCLS are daily index closes,
 not OHLCV for the 23 stock/ETF symbols. Local archives are offline historical
 inputs and do not establish a fresh feed.

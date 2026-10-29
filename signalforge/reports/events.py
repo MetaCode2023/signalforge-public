@@ -13,7 +13,7 @@ import math
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from signalforge import __version__
 
@@ -442,13 +442,80 @@ def build_backtest_events(wh, now, run_id, book="research"):
     return events, warnings
 
 
+def _money(value, places="0.01") -> float:
+    return float(Decimal(str(value)).quantize(Decimal(places), rounding=ROUND_HALF_UP))
+
+
+def _paper_kind(book: str) -> str:
+    slug = slugify(book)
+    if len(slug) <= 24:
+        return f"paper-{slug}"
+    return f"paper-{slug[:15]}-{hashlib.sha256(book.encode()).hexdigest()[:8]}"
+
+
 def build_paper_session_events(wh, now, run_id):
+    """One event per persisted session, so the dashboard can show the book's path.
+
+    Totals (trades, max drawdown) run per reported strategy id, which is how the
+    dashboard groups them. Rows recorded before pnl was persisted are not sent
+    but still count toward those totals. An event the Worker would refuse is
+    skipped with a warning so it cannot block the rest of the push.
+    """
     con = wh.con
     if not _has_table(con, "paper_sessions"):
         return [], []
-    if not con.execute("SELECT count(*) FROM paper_sessions").fetchone()[0]:
-        return [], []
-    return [], ["paper_session skipped: realized/unrealized pnl are not persisted in paper_sessions"]
+    columns = {r[0] for r in con.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'paper_sessions'"
+    ).fetchall()}
+    if not {"realized_pnl", "unrealized_pnl", "drawdown", "positions"} <= columns:
+        total = con.execute("SELECT count(*) FROM paper_sessions").fetchone()[0]
+        return [], [f"paper_session skipped: {total} paper session rows predate pnl persistence"] if total else []
+    started = {}
+    if _has_table(con, "paper_books"):
+        started = {b: str(c) for b, c in con.execute(
+            "SELECT book_id, created_at FROM paper_books").fetchall()}
+    rows = con.execute(
+        "SELECT book_id, session_date, strategy_id, parameters, equity, cash, fills, realized_pnl, "
+        "unrealized_pnl, drawdown, positions FROM paper_sessions ORDER BY book_id, session_date"
+    ).fetchall()
+    events, warnings, skipped = [], [], 0
+    trades, worst, peak = {}, {}, {}
+    for book, day, name, parameters, equity, cash, fills, realized, unrealized, drawdown, positions in rows:
+        sid = _strategy_id(_paper_kind(book), name, parameters)
+        equity = Decimal(str(equity))
+        trades[sid] = trades.get(sid, 0) + int(fills or 0)
+        peak[sid] = max(peak.get(sid, equity), equity)
+        if drawdown is None:
+            drawdown = 1 - equity / peak[sid] if peak[sid] > 0 else Decimal(0)
+        worst[sid] = max(worst.get(sid, Decimal(0)), Decimal(str(drawdown)))
+        if None in (realized, unrealized, positions):
+            skipped += 1
+            continue
+        payload = {
+            "strategy_id": sid,
+            "as_of": f"{day.isoformat()}T00:00:00Z",
+            "equity": _money(equity), "cash": _money(cash),
+            "realized_pnl": _money(realized), "unrealized_pnl": _money(unrealized),
+            "max_drawdown_pct": _money(worst[sid] * 100, "0.0001"),
+            "trades": trades[sid],
+            "positions": [
+                {"symbol": p["symbol"], "qty": int(p["quantity"]),
+                 "avg_cost": _money(p["average_cost"], "0.0001"),
+                 "market_value": _money(p["market_value"])}
+                for p in json.loads(positions)
+            ],
+        }
+        key = f"{book}|{started.get(book, '')}|{day.isoformat()}"
+        event = _envelope("paper_session", run_id, now, payload, key)
+        try:
+            validate_event(event)
+        except EventInvalid:
+            warnings.append(f"paper_session skipped: {book} {day.isoformat()} would be refused by the Worker")
+            continue
+        events.append(event)
+    if skipped:
+        warnings.append(f"paper_session skipped: {skipped} paper session rows predate pnl persistence")
+    return events, warnings
 
 
 def build_all(wh, now):

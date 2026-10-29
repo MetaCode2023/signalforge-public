@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS paper_sessions (
     parameters VARCHAR,
     paused_reason VARCHAR,
     state_digest VARCHAR,
+    realized_pnl DECIMAL(18,6),
+    unrealized_pnl DECIMAL(18,6),
+    drawdown DECIMAL(18,6),
+    positions VARCHAR,
     PRIMARY KEY (book_id, session_date)
 );
 CREATE TABLE IF NOT EXISTS paper_books (
@@ -147,6 +151,13 @@ def ensure_schema(con) -> None:
     con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS parameters VARCHAR")
     con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS paused_reason VARCHAR")
     con.execute("ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS state_digest VARCHAR")
+    for column, kind in (
+        ("realized_pnl", "DECIMAL(18,6)"),
+        ("unrealized_pnl", "DECIMAL(18,6)"),
+        ("drawdown", "DECIMAL(18,6)"),
+        ("positions", "VARCHAR"),
+    ):
+        con.execute(f"ALTER TABLE paper_sessions ADD COLUMN IF NOT EXISTS {column} {kind}")
 
 
 class RunnerRefusal(SignalForgeError):
@@ -622,6 +633,18 @@ class PaperRunner:
         self._last_persisted_session = completed
         return len(rows)
 
+    def _positions_json(self, statement) -> str:
+        marks = self.broker.marks
+        return json.dumps([
+            {
+                "symbol": symbol,
+                "quantity": position.quantity,
+                "average_cost": str(position.average_cost),
+                "market_value": str(position.market_value(marks[symbol])),
+            }
+            for symbol, position in sorted(statement.positions.items())
+        ])
+
     def _replay_pause(self, reason: str, day: date) -> None:
         if reason:
             if not (self.broker.paused and self.broker.pause_reason == reason):
@@ -742,8 +765,9 @@ class PaperRunner:
             con.execute(
                 "INSERT OR REPLACE INTO paper_sessions (book_id, session_date, strategy_id, "
                 "equity, cash, gross_exposure, position_count, fills, completed_at, "
-                "parameters, paused_reason, state_digest) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "parameters, paused_reason, state_digest, realized_pnl, unrealized_pnl, "
+                "drawdown, positions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     self.book_id,
                     day,
@@ -757,6 +781,10 @@ class PaperRunner:
                     self._session_params,
                     self.broker.pause_reason if self.broker.paused else "",
                     self.broker.state_digest(),
+                    str(statement.realized_pnl),
+                    str(statement.unrealized_pnl),
+                    str(statement.drawdown),
+                    self._positions_json(statement),
                 ],
             )
             for event in self.broker.ledger.events[ledger_start:]:

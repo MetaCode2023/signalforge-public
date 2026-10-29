@@ -463,3 +463,34 @@ class TestReviewFixes:
         single.run(history, through=DAYS[40])
         assert r.broker.state_digest() == single.broker.state_digest()
         assert sessions(warehouse) == sessions(other)
+
+
+class TestSessionReportFields:
+    def test_session_rows_record_pnl_drawdown_and_positions(self, warehouse, history):
+        r = make(warehouse)
+        r.run(history, through=DAYS[30])
+        last = r.broker.statements[-1]
+        row = warehouse.con.execute(
+            "SELECT realized_pnl, unrealized_pnl, drawdown, positions FROM paper_sessions "
+            "WHERE session_date = ?", [DAYS[30]]
+        ).fetchall()[0]
+        cast = lambda v: warehouse.con.execute(
+            "SELECT CAST(? AS DECIMAL(18,6))", [str(v)]).fetchall()[0][0]
+        assert row[0] == cast(last.realized_pnl)
+        assert row[1] == cast(last.unrealized_pnl)
+        assert row[2] == cast(last.drawdown)
+        import json
+        positions = json.loads(row[3])
+        quantity = r.broker.portfolio().quantity_of("AAA")
+        assert quantity > 0
+        assert positions == [{
+            "symbol": "AAA",
+            "quantity": quantity,
+            "average_cost": str(last.positions["AAA"].average_cost),
+            "market_value": str(D(130) * quantity),
+        }]
+
+    def test_a_flat_session_records_an_empty_position_list(self, warehouse, history):
+        make(warehouse).run(history, through=DAYS[0])
+        assert warehouse.con.execute(
+            "SELECT positions FROM paper_sessions").fetchall() == [("[]",)]

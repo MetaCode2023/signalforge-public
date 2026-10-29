@@ -450,16 +450,137 @@ def test_paper_sessions_absent_table_is_empty(tmp_path):
     assert ev.build_paper_session_events(make_wh(tmp_path), NOW, "r") == ([], [])
 
 
-def test_paper_sessions_skipped_with_warning_since_pnl_not_persisted(tmp_path):
+def paper_rows(wh, rows):
+    from signalforge.paper.runner import ensure_schema
+    ensure_schema(wh.con)
+    for r in rows:
+        wh.con.execute(
+            "INSERT INTO paper_sessions (book_id, session_date, strategy_id, equity, cash, "
+            "gross_exposure, position_count, fills, completed_at, parameters, paused_reason, "
+            "state_digest, realized_pnl, unrealized_pnl, drawdown, positions) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, '', 'd', ?, ?, ?, ?)", r)
+
+
+PARAMS = json.dumps({"fast_window": 50, "slow_window": 200, "symbols": ["AAA"], "target_weight": "0.05"})
+POS = json.dumps([{"symbol": "AAA", "quantity": 10, "average_cost": "100.123456",
+                   "market_value": "1010.555"}])
+
+
+def test_paper_sessions_become_one_event_per_session(tmp_path):
     wh = make_wh(tmp_path)
-    wh.con.execute(
-        "CREATE TABLE paper_sessions (book_id VARCHAR, session_date DATE, strategy_id VARCHAR, "
-        "equity DECIMAL(18,6), cash DECIMAL(18,6), gross_exposure DECIMAL(18,6), "
-        "position_count BIGINT, fills BIGINT, completed_at TIMESTAMP)")
-    wh.con.execute(
-        "INSERT INTO paper_sessions VALUES ('b', DATE '2026-10-27', 'buy_and_hold', 1000, 10, 990, 1, 1, NULL)")
+    paper_rows(wh, [
+        ["ohlcv:universe", date(2026, 10, 27), "ma_trend", "100000", "100000", "0", 0, 0,
+         PARAMS, "0", "0", "0", "[]"],
+        ["ohlcv:universe", date(2026, 10, 28), "ma_trend", "99950.5", "98939.945", "1010.555", 1, 1,
+         PARAMS, "-5", "-44.5", "0.0123456", POS],
+        ["ohlcv:universe", date(2026, 10, 29), "ma_trend", "99990", "98939.945", "1050.055", 1, 2,
+         PARAMS, "-5", "5", "0.001", POS],
+    ])
     events, warns = ev.build_paper_session_events(wh, NOW, "r")
-    assert events == [] and any("pnl" in w.lower() for w in warns)
+    assert warns == []
+    assert len(events) == 3 and len({e["event_id"] for e in events}) == 3
+    for e in events:
+        ev.validate_event(e)
+        assert e["event_type"] == "paper_session"
+        assert e["payload"]["strategy_id"] == "paper-ohlcv-universe.ma_trend-50-200-0.05"
+    first, second, third = (e["payload"] for e in events)
+    assert first["as_of"] == "2026-10-27T00:00:00Z" and first["positions"] == []
+    assert second == {
+        "strategy_id": "paper-ohlcv-universe.ma_trend-50-200-0.05",
+        "as_of": "2026-10-28T00:00:00Z", "equity": 99950.5, "cash": 98939.95,
+        "realized_pnl": -5.0, "unrealized_pnl": -44.5, "max_drawdown_pct": 1.2346, "trades": 1,
+        "positions": [{"symbol": "AAA", "qty": 10, "avg_cost": 100.1235, "market_value": 1010.56}],
+    }
+    assert third["max_drawdown_pct"] == 1.2346 and third["trades"] == 3
+    again, _ = ev.build_paper_session_events(wh, NOW, "r")
+    assert [e["event_id"] for e in again] == [e["event_id"] for e in events]
+
+
+def test_paper_rows_without_pnl_are_skipped_with_a_warning(tmp_path):
+    wh = make_wh(tmp_path)
+    paper_rows(wh, [
+        ["b", date(2026, 10, 27), "buy_and_hold", "1000", "10", "990", 1, 1, None, None, None, None, None],
+    ])
+    events, warns = ev.build_paper_session_events(wh, NOW, "r")
+    assert events == [] and any("1 paper session" in w for w in warns)
+
+
+def test_each_book_reports_under_its_own_strategy_id(tmp_path):
+    wh = make_wh(tmp_path)
+    paper_rows(wh, [
+        ["ohlcv:universe", date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"],
+        ["series:NASDAQCOM", date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"],
+    ])
+    events, _ = ev.build_paper_session_events(wh, NOW, "r")
+    assert sorted(e["payload"]["strategy_id"] for e in events) == [
+        "paper-ohlcv-universe.ma_trend-50-200-0.05",
+        "paper-series-nasdaqcom.ma_trend-50-200-0.05",
+    ]
+
+
+def test_an_event_the_worker_would_refuse_is_skipped_not_fatal(tmp_path):
+    wh = make_wh(tmp_path)
+    held = json.dumps([{"symbol": "NASDAQCOM", "quantity": 1, "average_cost": "1", "market_value": "1"}])
+    paper_rows(wh, [
+        ["series:NASDAQCOM", date(2026, 10, 27), "ma_trend", "100", "99", "1", 1, 1, PARAMS, "0", "0", "0", held],
+        ["ohlcv:universe", date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"],
+    ])
+    events, warns = ev.build_paper_session_events(wh, NOW, "r")
+    assert [e["payload"]["strategy_id"] for e in events] == ["paper-ohlcv-universe.ma_trend-50-200-0.05"]
+    assert any("series:NASDAQCOM" in w and "2026-10-27" in w for w in warns)
+
+
+def test_a_long_symbols_book_gets_a_bounded_distinct_strategy_id(tmp_path):
+    wh = make_wh(tmp_path)
+    many = "ohlcv:AAPL,AMD,AMZN,GOOGL,JPM,META,MSFT,NFLX,NVDA,TSLA"
+    more = many + ",XOM"
+    paper_rows(wh, [
+        [many, date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"],
+        [more, date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"],
+    ])
+    events, warns = ev.build_paper_session_events(wh, NOW, "r")
+    assert warns == [] and len(events) == 2
+    ids = [e["payload"]["strategy_id"] for e in events]
+    assert len(set(ids)) == 2 and all(len(i) <= 64 for i in ids)
+
+
+def test_legacy_rows_still_count_toward_trades_and_drawdown(tmp_path):
+    wh = make_wh(tmp_path)
+    paper_rows(wh, [
+        ["b", date(2026, 10, 26), "ma_trend", "1000", "1000", "0", 0, 2, PARAMS, None, None, None, None],
+        ["b", date(2026, 10, 27), "ma_trend", "900", "900", "0", 0, 1, PARAMS, None, None, None, None],
+        ["b", date(2026, 10, 28), "ma_trend", "950", "950", "0", 0, 0, PARAMS, "0", "0", "0.05", "[]"],
+    ])
+    events, warns = ev.build_paper_session_events(wh, NOW, "r")
+    assert len(events) == 1 and any("2 paper session" in w for w in warns)
+    assert events[0]["payload"]["trades"] == 3
+    assert events[0]["payload"]["max_drawdown_pct"] == 10.0
+
+
+def test_a_reset_book_gets_new_event_ids(tmp_path):
+    wh = make_wh(tmp_path)
+    row = ["ohlcv:universe", date(2026, 10, 27), "ma_trend", "100", "100", "0", 0, 0, PARAMS, "0", "0", "0", "[]"]
+    paper_rows(wh, [row])
+    wh.con.execute("INSERT INTO paper_books VALUES ('ohlcv:universe', DATE '2026-10-27', TIMESTAMP '2026-10-28 10:00:00')")
+    first, _ = ev.build_paper_session_events(wh, NOW, "r")
+    wh.con.execute("DELETE FROM paper_sessions")
+    wh.con.execute("DELETE FROM paper_books")
+    paper_rows(wh, [row])
+    wh.con.execute("INSERT INTO paper_books VALUES ('ohlcv:universe', DATE '2026-10-27', TIMESTAMP '2026-10-29 10:00:00')")
+    second, _ = ev.build_paper_session_events(wh, NOW, "r")
+    assert first[0]["event_id"] != second[0]["event_id"]
+
+
+def test_totals_follow_the_reported_strategy_not_the_book(tmp_path):
+    wh = make_wh(tmp_path)
+    other = json.dumps({"fast_window": 20, "slow_window": 100, "target_weight": "0.05"})
+    paper_rows(wh, [
+        ["b", date(2026, 10, 26), "ma_trend", "1000", "1000", "0", 0, 4, PARAMS, "0", "0", "0.2", "[]"],
+        ["b", date(2026, 10, 27), "ma_trend", "1000", "1000", "0", 0, 1, other, "0", "0", "0.01", "[]"],
+    ])
+    events, _ = ev.build_paper_session_events(wh, NOW, "r")
+    assert events[1]["payload"]["trades"] == 1
+    assert events[1]["payload"]["max_drawdown_pct"] == 1.0
 
 
 def test_heartbeat_lists_approved_strategies_and_build_all_order(tmp_path):

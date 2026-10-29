@@ -526,6 +526,11 @@ class PaperBroker:
     def pause_reason(self) -> str:
         return self._state.pause_reason
 
+    @property
+    def marks(self) -> dict[str, Decimal]:
+        """The closes the last session was valued at."""
+        return dict(self._previous_marks)
+
     def state_digest(self) -> str:
         """A hash of everything that decides the next session's behaviour.
 

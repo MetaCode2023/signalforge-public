@@ -183,3 +183,16 @@ class TestSelectionBiasPanel:
         lowered = html.lower()
         assert "tried" in lowered
         assert "null" in lowered or "luck" in lowered or "random" in lowered
+
+
+def test_strategy_only_runs_do_not_show_the_drawdown_limit():
+    from types import SimpleNamespace
+
+    from signalforge.config.models import RiskConfig
+    from signalforge.dashboard.sections import drawdown_limit_html
+
+    config = SimpleNamespace(risk=RiskConfig())
+    assert "limit 10.00%" in drawdown_limit_html({"fast_window": 50}, config)
+    off = drawdown_limit_html({"fast_window": 50, "risk_drawdown_breaker": "off"}, config)
+    assert "breaker off" in off and "limit" not in off
+    assert drawdown_limit_html({}, None) == ""

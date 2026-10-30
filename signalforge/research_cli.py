@@ -1,7 +1,8 @@
 """The research entry point.
 
     python -m signalforge.research_cli [--run-holdout] [--no-dashboard]
-        [--series ID | --symbols A,B | --universe] [--benchmark SPY] [--source tiingo]
+        [--series ID | --symbols A,B | --universe | --universe-file PATH]
+        [--overlays] [--benchmark SPY] [--source tiingo]
 
 Runs the baseline suite over the train and validation windows, records every
 run in the experiment registry, and renders the operator dashboard from the
@@ -20,8 +21,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
-from signalforge.config.models import ConfigBundle, ResearchConfig, load_all
-from signalforge.core.errors import SignalForgeError, ValidationError
+from signalforge.config.models import (
+    ConfigBundle,
+    ResearchConfig,
+    UniverseConfig,
+    load_all,
+    load_universe,
+)
+from signalforge.core.errors import ConfigError, SignalForgeError, ValidationError
 from signalforge.data.storage import Warehouse
 from signalforge.learning.registry import ExperimentRegistry
 from signalforge.pipeline import (
@@ -30,9 +37,13 @@ from signalforge.pipeline import (
     HistoryBundle,
     ResearchRun,
     baseline_specs,
+    broad_specs,
     coverage_notes,
     load_index_bundle,
     load_regime_labels,
+    load_riskoff_gates,
+    ohlcv_history,
+    overlay_specs,
     run_window,
 )
 
@@ -50,6 +61,39 @@ OHLCV_HOLDOUT_REFUSED = (
     "fingerprint, and the warehouse bars and their adjustment factors are revised "
     "by the provider, so there is no revision-stable dataset ID to key a single "
     "look against. Nothing was run and the registry is unchanged."
+)
+
+OVERLAYS_REFUSED_HOLDOUT = (
+    "--run-holdout is refused with --overlays and with --universe-file: those runs "
+    "have no revision-stable dataset ID to key a single look against, and overlay "
+    "variants multiply the number of looks. Nothing was run and the registry is unchanged."
+)
+
+BROAD_UNIVERSE_NOTE = (
+    "BROAD UNIVERSE {name}: {count} committed symbols, bars loaded {load_start} .. "
+    "{validation_end} only; bars after the validation window are never loaded. The "
+    "train window here is {train_start} .. {train_end} ({years} years), shorter than "
+    "the research config train window. The symbol list is the set of names "
+    "that have bars in the warehouse today, so it is not a list anyone could have "
+    "written at the time."
+)
+
+ELIGIBILITY_NOTE = (
+    "ELIGIBILITY: each day a name is only tradeable if it has at least "
+    "{min_history_sessions} visible sessions, a latest bar no older than {max_stale_days} "
+    "days (the risk engine staleness limit), and a median close x volume over its last "
+    "{dollar_volume_window} sessions of at least {min_median_dollar_volume}. Ineligible "
+    "names get an explicit exit. The screen uses only data visible that day, but the "
+    "list it screens is still today's survivors, so it narrows survivorship bias "
+    "without removing it. Breadth makes survivorship worse, not better: more names "
+    "that survived to today."
+)
+
+REGIME_GATE_NOTE = (
+    "REGIME GATE {name} ({series} {rule} {threshold}, {lag} session lag) {window}: "
+    "risk-off {off}, risk-on {on}, unknown {unknown} sessions. Unknown (no observation "
+    "within 10 days) is treated as risk-on. Values are the latest published figures, "
+    "not vintage-dated (no ALFRED), so a revised value is used as if it were always known."
 )
 
 
@@ -87,6 +131,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="trade the research.yaml universe from the warehouse OHLCV bars",
     )
+    mode.add_argument(
+        "--universe-file",
+        type=Path,
+        default=None,
+        help="trade the explicit symbol list in a universe YAML (see config/universes/)",
+    )
+    parser.add_argument(
+        "--overlays",
+        action="store_true",
+        help="also run the trend and momentum strategies behind each risk-off gate",
+    )
     parser.add_argument("--benchmark", default="SPY")
     parser.add_argument("--source", default="tiingo")
     parser.add_argument(
@@ -109,9 +164,17 @@ def run_research(
     source: str | None = None,
     run_holdout: bool = False,
     registry: ExperimentRegistry | None = None,
+    universe: UniverseConfig | None = None,
+    overlays: bool = False,
 ) -> ResearchOutput:
     from signalforge.config.models import RiskConfig
 
+    if universe is not None:
+        symbols, benchmark, source = list(universe.symbols), universe.benchmark, universe.source
+    if overlays and symbols is None:
+        raise ValidationError("--overlays needs an OHLCV run (--symbols, --universe or --universe-file)")
+    if (overlays or universe is not None) and run_holdout:
+        raise ValidationError(OVERLAYS_REFUSED_HOLDOUT)
     if symbols is not None:
         if not symbols:
             raise ValidationError(
@@ -124,7 +187,12 @@ def run_research(
                 "an OHLCV run needs an explicit source: the warehouse can hold the "
                 "same symbol from several datasets and mixing them is refused"
             )
-        bundle, specs = _ohlcv_bundle(warehouse, symbols, benchmark, source)
+        if universe is not None:
+            bundle, specs, research = _universe_bundle(
+                warehouse, universe, research, RiskConfig().stale_data_max_age_days
+            )
+        else:
+            bundle, specs = _ohlcv_bundle(warehouse, symbols, benchmark, source)
     else:
         bundle = load_index_bundle(warehouse, series_id)
         specs = baseline_specs(bundle.history.symbols[0])
@@ -133,6 +201,10 @@ def run_research(
         risk=RiskConfig(),
         data_sources=_safe_data_sources(),
     )
+    gates = []
+    if overlays:
+        gates = load_riskoff_gates(warehouse)
+        specs = specs + overlay_specs(specs, gates)
     registry = registry or ExperimentRegistry(warehouse)
     output = ResearchOutput()
     output.notes.append(bundle.description)
@@ -155,14 +227,29 @@ def run_research(
             windows.append("test")
 
     for window in windows:
-        run = run_window(bundle, config, window, specs=specs, regime_labels=regime_labels)
+        # The strategy-only rows exist for train and validation. The test window
+        # is a single look keyed by the as-traded specs, so it gets no second row.
+        run = run_window(
+            bundle, config, window, specs=specs, regime_labels=regime_labels,
+            strategy_only=window != "test",
+        )
         if symbols is not None:
             run.limitations.extend(
                 n
                 for n in coverage_notes(
-                    bundle.history, config.research.splits, benchmark, universe=tuple(symbols)
+                    bundle.history, config.research.splits, benchmark, universe=tuple(symbols),
+                    summarise=universe is not None,
                 )
                 if n.split()[1].lower() == window
+            )
+        for gate in gates:
+            counts = gate.count_states(bundle.history.trading_days, run.start, run.end)
+            run.limitations.append(
+                REGIME_GATE_NOTE.format(
+                    name=gate.name, series=gate.series_id, rule=gate.rule,
+                    threshold=gate.threshold, lag=gate.lag_sessions, window=window,
+                    off=counts["risk_off"], on=counts["risk_on"], unknown=counts["unknown"],
+                )
             )
         output.runs.append(run)
         output.experiment_ids.extend(_record(registry, run, config))
@@ -202,6 +289,55 @@ def _ohlcv_bundle(
     return bundle, baseline_specs(
         bundle.history.symbols[0], universe=traded, benchmark=benchmark
     )
+
+
+def _universe_bundle(
+    warehouse: Warehouse,
+    universe: UniverseConfig,
+    research: ResearchConfig,
+    max_stale_days: int,
+) -> tuple[HistoryBundle, list[tuple[str, str, dict]], ResearchConfig]:
+    """History, specs and research config for a universe-file run.
+
+    Bars are loaded only up to the validation window end, so the test window
+    is never read. The returned config carries the universe train_start in
+    its splits, so the registry records the windows that were really run.
+    """
+    effective = universe.effective_splits(research.splits)
+    research = research.model_copy(update={"splits": effective})
+    wanted = sorted(set(universe.symbols) | {universe.benchmark})
+    loaded = ohlcv_history(
+        warehouse, wanted, sources=[universe.source], price_basis="adjusted",
+        start=universe.load_start, end=effective.validation_end,
+    )
+    if universe.benchmark not in loaded.history.symbols:
+        raise ValidationError(
+            f"benchmark {universe.benchmark} has no {universe.source} bars in the warehouse; "
+            "the benchmark must be ingested before an OHLCV run can be compared to it"
+        )
+    years = round((effective.train_end - effective.train_start).days / 365.25)
+    notes = (
+        SURVIVORSHIP_NOTE,
+        EXPOSURE_MISMATCH_NOTE,
+        BROAD_UNIVERSE_NOTE.format(
+            name=universe.name, count=len(universe.symbols), load_start=universe.load_start,
+            validation_end=effective.validation_end, train_start=effective.train_start,
+            train_end=effective.train_end, years=years,
+        ),
+        ELIGIBILITY_NOTE.format(
+            **universe.eligibility.model_dump(), max_stale_days=max_stale_days
+        ),
+    )
+    bundle = HistoryBundle(
+        history=loaded.history,
+        limitations=(*loaded.limitations, *notes),
+        description=f"{loaded.description}, universe {universe.name}",
+    )
+    specs = broad_specs(
+        tuple(universe.symbols), universe.benchmark, universe.eligibility, universe.max_names,
+        max_stale_days,
+    )
+    return bundle, specs, research
 
 
 def _holdout_already_spent(
@@ -343,6 +479,7 @@ def write_dashboard_for(
 
 def format_table(output: ResearchOutput) -> str:
     lines: list[str] = []
+    width = max([34] + [len(o.label) + 2 for run in output.runs for o in run.outcomes])
     for run in output.runs:
         lines.append("")
         lines.append(
@@ -350,7 +487,7 @@ def format_table(output: ResearchOutput) -> str:
             f"dataset {run.dataset_fingerprint[:12]}"
         )
         lines.append(
-            f"{'strategy':<34}{'totRet':>9}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}"
+            f"{'strategy':<{width}}{'totRet':>9}{'CAGR':>8}{'Sharpe':>8}{'maxDD':>8}"
             f"{'trades':>7}{'capDep':>8}  evidence"
         )
         for outcome in run.outcomes:
@@ -363,7 +500,7 @@ def format_table(output: ResearchOutput) -> str:
                 else "n/a"
             )
             lines.append(
-                f"{outcome.label:<34}{outcome.total_return:>8.1%}{cagr:>8}{sharpe:>8}"
+                f"{outcome.label:<{width}}{outcome.total_return:>8.1%}{cagr:>8}{sharpe:>8}"
                 f"{m.max_drawdown:>7.1%}{m.trade_count:>7}{cap:>8}  {m.evidence.value}"
             )
     return "\n".join(lines)
@@ -371,15 +508,31 @@ def format_table(output: ResearchOutput) -> str:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    ohlcv = args.symbols is not None or args.universe
-    if ohlcv and args.run_holdout:
-        print(OHLCV_HOLDOUT_REFUSED)
+    ohlcv = args.symbols is not None or args.universe or args.universe_file is not None
+    if (ohlcv or args.overlays) and args.run_holdout:
+        print(OHLCV_HOLDOUT_REFUSED if args.symbols is not None or args.universe else OVERLAYS_REFUSED_HOLDOUT)
+        return 2
+    if args.overlays and not ohlcv:
+        print("refused: --overlays needs an OHLCV run (--symbols, --universe or --universe-file)")
         return 2
     if not args.db.exists():
         print(f"no warehouse at {args.db}; run the archive ingestion first")
         return 2
     config = load_all()
-    symbols = list(config.research.universe) if args.universe else args.symbols
+    universe = None
+    if args.universe_file is not None:
+        try:
+            universe = load_universe(args.universe_file)
+            splits = universe.effective_splits(config.research.splits)
+        except ConfigError as exc:
+            print(f"refused: {exc}")
+            return 2
+        config = config.model_copy(
+            update={"research": config.research.model_copy(update={"splits": splits})}
+        )
+        symbols = list(universe.symbols)
+    else:
+        symbols = list(config.research.universe) if args.universe else args.symbols
     if ohlcv and not symbols:
         print("refused: no symbols to trade (--symbols is empty or research.universe is empty)")
         return 2
@@ -394,6 +547,8 @@ def main(argv=None) -> int:
                 benchmark=args.benchmark,
                 source=args.source,
                 run_holdout=args.run_holdout,
+                universe=universe,
+                overlays=args.overlays,
             )
         except ValidationError as exc:
             if not ohlcv:

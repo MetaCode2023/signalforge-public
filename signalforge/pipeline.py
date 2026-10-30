@@ -20,12 +20,13 @@ from decimal import Decimal
 
 from signalforge.backtesting.engine import BacktestEngine
 from signalforge.backtesting.metrics import PerformanceMetrics, compute_metrics
-from signalforge.config.models import ConfigBundle, ResearchConfig, RiskConfig
+from signalforge.config.models import ConfigBundle, EligibilityConfig, ResearchConfig, RiskConfig
 from signalforge.core.errors import ValidationError
 from signalforge.core.history import PriceHistory, summarise_symbols
-from signalforge.core.interfaces import BacktestResult
+from signalforge.core.interfaces import BacktestResult, RiskEvent
 from signalforge.core.types import Bar
 from signalforge.data.storage import Warehouse
+from signalforge.strategies.regime import RiskOffGate
 from signalforge.strategies.registry import build
 
 ZERO = Decimal("0")
@@ -341,6 +342,8 @@ def ohlcv_history(
     sources: list[str] | None = None,
     *,
     price_basis: str = "raw",
+    start: date | None = None,
+    end: date | None = None,
 ) -> HistoryBundle:
     """Build a history from real per-symbol OHLCV stored in the warehouse.
 
@@ -360,7 +363,7 @@ def ohlcv_history(
         raise ValidationError(
             f"unknown price_basis {price_basis!r}; expected one of {list(PRICE_BASES)}"
         )
-    bars = warehouse.load_bars(symbols=symbols)
+    bars = warehouse.load_bars(symbols=symbols, start=start, end=end)
     if sources is not None:
         allowed = set(sources)
         bars = [b for b in bars if b.source in allowed]
@@ -371,10 +374,11 @@ def ohlcv_history(
         )
 
     notes: list[str] = []
-    for symbol in sorted({b.symbol for b in bars}):
-        symbol_bars = sorted(
-            (b for b in bars if b.symbol == symbol), key=lambda b: b.trade_date
-        )
+    grouped: dict[str, list[Bar]] = {}
+    for b in bars:
+        grouped.setdefault(b.symbol, []).append(b)
+    for symbol in sorted(grouped):
+        symbol_bars = sorted(grouped[symbol], key=lambda b: b.trade_date)
         for previous, current in zip(symbol_bars, symbol_bars[1:]):
             gap = (current.trade_date - previous.trade_date).days
             if gap < GAP_DECLARE_DAYS:
@@ -528,12 +532,158 @@ def baseline_specs(
     ]
 
 
+# name, series, rule, threshold, lag in sessions. Decided a priori, not tuned.
+RISKOFF_GATES = (
+    ("vix30", "VIXCLS", ">", Decimal("30"), 1),
+    ("curve0", "T10Y2Y", "<", Decimal("0"), 2),
+)
+
+
+def broad_specs(
+    traded: tuple[str, ...],
+    benchmark: str,
+    eligibility: EligibilityConfig,
+    max_names: int,
+    max_stale_days: int,
+) -> list[tuple[str, str, dict]]:
+    """The strategies a broad run can afford: the two that scale to hundreds of names.
+
+    Both run behind the point-in-time eligibility screen and hold at most
+    `max_names` positions, so the 20-position risk cap is rarely what picks the
+    book. It can still bite: max_positions counts unfilled orders, so a
+    rotation (an exit and an entry on the same signal day) fills one session
+    late and the cap can refuse an ENTER on the signal day. Mean reversion is left out (quadratic in history) and the
+    vol-targeted trend is left out (the 5% cap binds before vol scaling, so it
+    duplicates ma_trend).
+    """
+    screen = {
+        "min_history_sessions": eligibility.min_history_sessions,
+        "min_median_dollar_volume": eligibility.min_median_dollar_volume,
+        "dollar_volume_window": eligibility.dollar_volume_window,
+        "max_stale_days": max_stale_days,
+    }
+    return [
+        (
+            f"MA trend 50/200 (top {max_names})",
+            "ma_trend",
+            {
+                "fast_window": 50,
+                "slow_window": 200,
+                "target_weight": Decimal("0.05"),
+                "symbols": traded,
+                "max_names": max_names,
+                "eligibility": dict(screen),
+            },
+        ),
+        (
+            f"Cross-sectional momentum 126/21 (top {max_names})",
+            "xs_momentum",
+            {
+                "lookback_days": 126,
+                "skip_days": 21,
+                "top_n": max_names,
+                "target_weight_total": Decimal("1.0"),
+                "min_history_days": 150,
+                "symbols": traded,
+                "eligibility": dict(screen),
+            },
+        ),
+        (
+            "Buy and hold (benchmark)",
+            "buy_and_hold",
+            {"symbols": (benchmark,), "target_weight": Decimal("0.05")},
+        ),
+    ]
+
+
+def overlay_specs(
+    specs: list[tuple[str, str, dict]], gates: list[RiskOffGate]
+) -> list[tuple[str, str, dict]]:
+    """Each trend/momentum spec behind each risk-off gate."""
+    return [
+        (f"{label} + riskoff {gate.name}", strategy_id, {**params, "riskoff_gate": gate})
+        for gate in gates
+        for label, strategy_id, params in specs
+        if strategy_id in ("ma_trend", "xs_momentum")
+    ]
+
+
+def load_gate(
+    warehouse: Warehouse,
+    name: str,
+    series_id: str,
+    rule: str,
+    threshold: Decimal,
+    lag_sessions: int,
+) -> RiskOffGate:
+    observations = warehouse.load_series(series_id)
+    if not observations:
+        raise ValidationError(
+            f"risk-off gate {name} needs series {series_id}, which has no observations "
+            "in the warehouse; ingest it before running with --overlays"
+        )
+    return RiskOffGate(name, series_id, rule, threshold, lag_sessions, observations)
+
+
+def load_riskoff_gates(warehouse: Warehouse) -> list[RiskOffGate]:
+    return [load_gate(warehouse, *gate) for gate in RISKOFF_GATES]
+
+
+def strategy_only_risk(risk: RiskConfig) -> RiskConfig:
+    """The research-only risk config for a "strategy only" row.
+
+    Identical to `risk` except the portfolio drawdown breaker, which is set to
+    100% (it only fires if equity is gone). RiskConfig has no off switch and
+    gets none: this is built here, handed to a research engine, and never
+    reaches the paper runner or any default. Position cap, single-name cap,
+    daily loss, staleness, order caps and participation are untouched.
+    """
+    return RiskConfig.model_validate(
+        {**risk.model_dump(), "max_portfolio_drawdown": Decimal("1")}
+    )
+
+
+class StrategyOnly:
+    """Labels a strategy as run with the drawdown breaker off. Signals pass through."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.strategy_id = f"{inner.strategy_id}_nobreaker"
+        self.warmup_days = inner.warmup_days
+
+    def parameters(self) -> dict[str, object]:
+        return {**self.inner.parameters(), "risk_drawdown_breaker": "off"}
+
+    def generate_signals(self, as_of, view):
+        return self.inner.generate_signals(as_of, view)
+
+
+def breaker_lockout_note(risk_events: list[RiskEvent]) -> str | None:
+    """Say how long the drawdown breaker kept a book out of new positions.
+
+    The breaker measures drawdown from the all-time peak and never resets, so
+    after a deep enough loss every later entry is refused. That is the engine
+    working as configured, but it makes the rest of the window cash.
+    """
+    days = sorted({e.event_date for e in risk_events if e.rule == "breaker_drawdown"})
+    if not days:
+        return None
+    return (
+        f"BREAKER LOCKOUT: the drawdown breaker refused risk-increasing orders on "
+        f"{len(days)} session(s), first on {days[0].isoformat()}, last on "
+        f"{days[-1].isoformat()}. Drawdown is measured from the run's peak equity and "
+        "does not reset, so sessions after the first refusal may be held in cash "
+        "by the breaker rather than by the strategy."
+    )
+
+
 def coverage_notes(
     history: PriceHistory,
     splits,
     benchmark: str,
     *,
     universe: tuple[str, ...] | None = None,
+    summarise: bool = False,
 ) -> list[str]:
     """Per-window coverage: who has no bars, who lists mid-window, and when
     the benchmark starts. Late listings are a silent no-op in the engine, so
@@ -561,9 +711,11 @@ def coverage_notes(
         bench_bars = history.bars_for(benchmark)
         parts = [f"COVERAGE {label} {start} .. {end}{caveat}."]
         if empty:
-            parts.append(f"No bars in this window: {', '.join(sorted(empty))}.")
+            names = summarise_symbols(sorted(empty)) if summarise else ", ".join(sorted(empty))
+            parts.append(f"No bars in this window: {names}.")
         if late:
-            parts.append(f"Listing mid-window: {', '.join(late)}.")
+            names = summarise_symbols(late) if summarise else ", ".join(late)
+            parts.append(f"Listing mid-window: {names}.")
         if bench_bars:
             parts.append(f"Benchmark {benchmark} from {bench_bars[0].trade_date.isoformat()}.")
         notes.append(" ".join(parts))
@@ -607,8 +759,14 @@ def run_window(
     *,
     specs: list[tuple[str, str, dict]] | None = None,
     regime_labels: dict[date, str] | None = None,
+    strategy_only: bool = False,
 ) -> ResearchRun:
-    """Run the baseline suite over one named evaluation window."""
+    """Run the baseline suite over one named evaluation window.
+
+    With `strategy_only`, every strategy except the buy-and-hold benchmark is
+    also run on an engine with the drawdown breaker off, as a second row
+    directly after its as-traded row.
+    """
     splits = config.research.splits
     if splits is None:
         raise ValidationError("research config defines no splits; cannot run a named window")
@@ -624,6 +782,7 @@ def run_window(
     symbol = bundle.history.symbols[0]
     specs = specs or baseline_specs(symbol)
     engine = BacktestEngine(config.research, config.risk)
+    free_engine = BacktestEngine(config.research, strategy_only_risk(config.risk))
 
     run = ResearchRun(
         window=window,
@@ -635,33 +794,42 @@ def run_window(
     )
 
     benchmark_curve = None
-    for label, strategy_id, params in specs:
-        strategy = build(strategy_id, **params)
-        result = engine.run(
-            strategy,
-            bundle.history,
-            start=start,
-            end=end,
-            run_id=f"{strategy_id}:{window}",
-            data_limitations=list(bundle.limitations),
-        )
-        metrics = compute_metrics(
-            result,
-            benchmark_curve=benchmark_curve,
-            config=config.research,
-            regime_labels=regime_labels,
-        )
-        if strategy_id == "buy_and_hold":
-            benchmark_curve = result.equity_curve
-        run.outcomes.append(
-            StrategyOutcome(
-                strategy_id=strategy_id,
-                label=label,
-                window=window,
-                result=result,
-                metrics=metrics,
+    for spec_label, strategy_id, params in specs:
+        variants = [(spec_label, engine, False)]
+        if strategy_only and strategy_id != "buy_and_hold":
+            variants.append((f"{spec_label} (strategy only)", free_engine, True))
+        for label, run_engine, free in variants:
+            strategy = build(strategy_id, **params)
+            if free:
+                strategy = StrategyOnly(strategy)
+            result = run_engine.run(
+                strategy,
+                bundle.history,
+                start=start,
+                end=end,
+                run_id=f"{strategy.strategy_id}:{window}",
+                data_limitations=list(bundle.limitations),
             )
-        )
+            lockout = breaker_lockout_note(result.risk_events)
+            if lockout:
+                run.limitations.append(f"{label}: {lockout}")
+            metrics = compute_metrics(
+                result,
+                benchmark_curve=benchmark_curve,
+                config=config.research,
+                regime_labels=regime_labels,
+            )
+            if strategy_id == "buy_and_hold":
+                benchmark_curve = result.equity_curve
+            run.outcomes.append(
+                StrategyOutcome(
+                    strategy_id=strategy.strategy_id,
+                    label=label,
+                    window=window,
+                    result=result,
+                    metrics=metrics,
+                )
+            )
 
     # Re-score everything against the benchmark now that it exists, so the
     # benchmark-relative figures are populated for every strategy.

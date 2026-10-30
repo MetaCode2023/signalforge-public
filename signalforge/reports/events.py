@@ -358,11 +358,18 @@ _SERIES_DESC = re.compile(r"^(\S+) daily close from ")
 _OHLCV_DESC = re.compile(r"^\d+ OHLCV bars for (\d+) symbols from (\S+?),")
 
 
+_UNIVERSE_SUFFIX = re.compile(r", universe ([a-z0-9][a-z0-9_-]*)$")
+
+
 def dataset_kind(description) -> str | None:
-    """Stable id of the kind of dataset: a series id, or ohlcv<symbol count>-<source>."""
+    """Stable id of the kind of dataset: a series id, ohlcv<symbol count>-<source>,
+    or ohlcv-<universe name>-<source> when the description names a universe file."""
     text = description or ""
     m = _OHLCV_DESC.match(text)
     if m:
+        named = _UNIVERSE_SUFFIX.search(text)
+        if named:
+            return slugify(f"ohlcv-{named.group(1)}-{m.group(2)}")
         return slugify(f"ohlcv{m.group(1)}-{m.group(2)}")
     m = _SERIES_DESC.match(text)
     if m:

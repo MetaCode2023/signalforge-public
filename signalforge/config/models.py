@@ -8,6 +8,7 @@ tunable a config file can switch off.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
@@ -314,6 +315,119 @@ class ResearchConfig(_Frozen):
         return value
 
 
+def _require_text(value, what: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{what} must be a string, got {value!r}; quote YAML 1.1 words like "
+            "ON/YES/NO/NULL, which YAML reads as booleans or null"
+        )
+    return value
+
+
+class EligibilityConfig(_Frozen):
+    """Point-in-time screen a broad run applies to every name, every day."""
+
+    min_history_sessions: int
+    min_median_dollar_volume: Decimal
+    dollar_volume_window: int
+
+    @field_validator("min_history_sessions", "dollar_volume_window")
+    @classmethod
+    def _positive(cls, value: int, info) -> int:
+        if value < 1:
+            raise ConfigError(f"{info.field_name} must be at least 1, got {value}")
+        return value
+
+    @field_validator("min_median_dollar_volume")
+    @classmethod
+    def _not_negative(cls, value: Decimal) -> Decimal:
+        if value < 0:
+            raise ConfigError(f"min_median_dollar_volume must not be negative, got {value}")
+        return value
+
+
+class UniverseConfig(_Frozen):
+    """An explicit, committed symbol list and where its history may start.
+
+    Deliberately carries no validation or test window: those come from the
+    research config's splits, so a universe file cannot move them. Only
+    `train_start` is raised, and only inside the existing train window.
+    """
+
+    name: str
+    source: str
+    benchmark: str
+    symbols: tuple[str, ...]
+    excluded: dict[str, str] = Field(default_factory=dict)
+    load_start: date
+    train_start: date
+    eligibility: EligibilityConfig
+    max_names: int
+
+    @field_validator("name")
+    @classmethod
+    def _slug(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", value):
+            raise ConfigError(
+                f"universe name must be a lowercase slug of at most 40 characters, got {value!r}"
+            )
+        return value
+
+    @field_validator("benchmark", mode="before")
+    @classmethod
+    def _benchmark_is_text(cls, value):
+        return _require_text(value, "benchmark").strip().upper()
+
+    @field_validator("excluded", mode="before")
+    @classmethod
+    def _excluded_keys_are_text(cls, value):
+        for key in value or {}:
+            _require_text(key, "excluded symbol")
+        return {key.strip().upper(): reason for key, reason in (value or {}).items()}
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def _normalise_symbols(cls, value):
+        if not isinstance(value, (list, tuple)) or not value:
+            raise ConfigError("universe symbols must be a non-empty list")
+        for item in value:
+            _require_text(item, "symbol")
+        symbols = [s.strip().upper() for s in value if s.strip()]
+        if len(set(symbols)) != len(symbols):
+            duplicates = sorted({s for s in symbols if symbols.count(s) > 1})
+            raise ConfigError(f"duplicate symbols in universe: {duplicates}")
+        return tuple(symbols)
+
+    @field_validator("max_names")
+    @classmethod
+    def _positive_max(cls, value: int) -> int:
+        if value < 1:
+            raise ConfigError(f"max_names must be at least 1, got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_coherent(self) -> UniverseConfig:
+        overlap = sorted(set(self.symbols) & set(self.excluded))
+        if overlap:
+            raise ConfigError(f"symbols are also listed as excluded: {overlap}")
+        if self.benchmark in self.symbols:
+            raise ConfigError(f"benchmark {self.benchmark} must not appear in symbols")
+        if self.load_start > self.train_start:
+            raise ConfigError(
+                f"load_start {self.load_start} must not follow train_start {self.train_start}"
+            )
+        return self
+
+    def effective_splits(self, splits: SplitConfig) -> SplitConfig:
+        """The research splits with train_start raised to this universe's."""
+        if not (splits.train_start <= self.train_start <= splits.train_end):
+            raise ConfigError(
+                f"train_start {self.train_start} must fall inside the train window "
+                f"{splits.train_start}..{splits.train_end}"
+            )
+        return SplitConfig(**{**splits.model_dump(), "train_start": self.train_start})
+
+
 class ProviderConfig(_Frozen):
     """One data source, with its licence position recorded alongside it.
 
@@ -410,6 +524,10 @@ def load_risk(path: Path | None = None) -> RiskConfig:
 def load_research(path: Path | None = None) -> ResearchConfig:
     path = path or CONFIG_DIR / "research.yaml"
     return _build(ResearchConfig, _read_yaml(path), path)
+
+
+def load_universe(path: Path) -> UniverseConfig:
+    return _build(UniverseConfig, _read_yaml(path), path)
 
 
 def load_data_sources(path: Path | None = None) -> DataSourcesConfig:

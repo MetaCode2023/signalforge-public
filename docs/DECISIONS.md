@@ -313,3 +313,114 @@ The registry exists to make the count of variants tried visible, and
 `family_wise_summary` exists because the per-strategy view answered the wrong
 question: the denominator for "did any of the things I tried beat the
 benchmark" is the number of things tried.
+
+## 13. The risk-off overlay: two gates, flatten to zero, no tuning
+
+Two overlays exist, both decided before any result was seen and neither tuned
+on the validation window. `vix30` is risk-off when VIXCLS is above 30, read
+with a 1 session publication lag. `curve0` is risk-off when T10Y2Y is below 0
+(an inverted curve), read with a 2 session lag. Each wraps `ma_trend` and
+`xs_momentum`, giving four overlay strategies in all, named
+`<strategy>_riskoff_<gate>`.
+
+Both thresholds are folk conventions that were known with hindsight: "VIX 30
+is fear" and "an inverted curve precedes recession" are the numbers everyone
+quotes after the fact. Choosing them in advance does not make them free of
+that, so a good overlay result is weaker evidence than the same result from a
+threshold derived from data that predates it. Nothing here was searched; if a
+third gate or a different threshold is ever tried, it counts as a new look and
+the family-wise correction has to see it.
+
+The engine only enters and exits, it never trims, so risk-off means flatten:
+every ENTER_LONG becomes an EXIT_LONG while the gate is on. Re-entry happens on
+the first risk-on session. Exits are never blocked by a breaker, so the
+flatten always goes through.
+
+The gate reads an observation published strictly before the session being
+decided: the reference session is `lag_sessions` trading days back, and the
+value used is the last non-null observation dated at or before it. An
+observation older than 10 calendar days, or none at all, is "unknown" and is
+treated as risk-on, with the count of unknown sessions reported beside the
+risk-off and risk-on counts for every window. Duplicate observation dates are
+refused. The series are the latest published values, not ALFRED vintages, so a
+later revision is used as if it had always been known. That is a residual
+look-ahead and is stated in every run's limitations.
+
+## 14. The broad universe: breadth, eligibility, and what was left out
+
+`config/universes/broad.yaml` lists every symbol with tiingo bars in the
+warehouse (466 after removing the benchmark and the excluded names). It is a
+separate file passed with `--universe-file`, not a key in `research.yaml`,
+because `ResearchConfig` forbids unknown keys and the paper book reads
+`research.universe`; the paper book is untouched. The file carries no
+validation or test window. Validation and test come from the existing splits,
+and the file may only raise `train_start`, to 1993-02-01 (SPY starts
+1993-01-29), which must fall inside the research train window. The broad train
+window is therefore 1993-02-01 to 2004-12-31, twelve years, and reports say
+so. Bars are loaded from 1992-01-02 up to the validation window end only: test
+window bars are never read, and the registry records the windows actually run.
+
+Excluded names: the 24 ETFs (not companies), AES (an unverified 2001-09-26
+halving) and USB (an unverified 1993-02-25 seven-to-one one-day drop). Both
+are owner exclusions pending a second source for the corporate action, not
+conclusions that the data is wrong.
+
+Eligibility is applied point in time, each day, by a wrapper around the
+strategy. A name is eligible if it is in the list, has at least 252 visible
+sessions, has printed a bar within the risk engine's staleness limit (5 days,
+taken from the risk config, so a frozen name cannot hold a slot the risk engine
+refuses to fill), and the median of close times volume over its last 63 visible
+sessions is at least 500,000 dollars. The floor is derived, not chosen: a 5%
+position of 100,000 dollars is 5,000 dollars, and at the 1% participation cap
+that needs 500,000 dollars of daily traded value to fill in one session.
+Adjusted close times adjusted volume is the raw dollar volume, so the screen
+does not move when a later split or dividend rewrites old prices. A name that
+stops being eligible gets an explicit exit.
+
+`ma_trend` is capped at 20 names (`max_names`), ranked by fast over slow
+average, ties by symbol. The cap
+limits the book to 20 names but does not make the risk cap irrelevant: the
+risk engine counts unfilled orders toward `max_positions`, so a rotation (an
+exit and an entry on the same signal day) fills one session late, and the cap
+can still refuse an ENTER on the signal day. Without the cap, 466 names under a 20 position risk
+limit would hold whichever 20 sorted first alphabetically and produce hundreds
+of rejected orders a day. `xs_momentum` holds the top 20 at 5% each.
+
+Dropped from the broad run: `vol_targeted_trend`, because the 5% single-name
+cap binds before volatility scaling and it duplicates `ma_trend` exactly (the
+21 name results show identical numbers); and `zscore_mean_reversion`, because
+it is quadratic in history length, which is too slow at this scale. Dropping
+them is a scale decision, not a result.
+
+Survivorship bias grows with breadth. Every name here survived to 2026, so
+more names means more survivors being treated as if they were knowable in
+1993. The eligibility screen narrows who can be traded on a given day; it does
+not bring back the companies that failed, were delisted or were acquired.
+Read the broad figures as an upper bound on what the method could have done.
+
+## 15. Every strategy is reported twice: as traded, and strategy only
+
+The portfolio drawdown breaker (10% from peak equity) never resets. After one
+deep drawdown it refuses every later entry, so the rest of a run is cash and
+the table measures the breaker, not the strategy. On the 21 name run, ma_trend
+was locked out from 1987-10-16 to the end of the train window.
+
+Every research strategy therefore appears on two rows. "As traded" is exactly
+the old behaviour with the default `RiskConfig`, breaker on, and its numbers
+are byte-identical to before. "Strategy only" (label suffix " (strategy only)",
+strategy id suffix `_nobreaker`) is the same strategy on an engine whose only
+difference is the drawdown breaker; position cap, single name cap, daily loss
+breaker, staleness, order caps and participation are all unchanged. The
+buy-and-hold benchmark is not doubled, and the test window gets no second row,
+because the single hold-out look is keyed to the as-traded specs.
+
+The breaker is switched off by building a research-only `RiskConfig` with the
+limit at 100% (`pipeline.strategy_only_risk`), not by adding an off switch to
+`RiskConfig`. A 100% drawdown only trips if equity is gone. Defaults and
+`risk.yaml` are untouched, and nothing in `signalforge/paper` or `paper_cli`
+names the helper; a test fails if they do. The paper book keeps the breaker.
+
+Neither row is the answer. As traded is what the guard would have allowed.
+Strategy only shows what the signal did without the guard and will usually
+look better, with larger drawdowns that the breaker exists to prevent. Lockout
+notes stay on the as-traded rows.

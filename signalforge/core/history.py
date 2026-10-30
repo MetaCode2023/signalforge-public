@@ -8,7 +8,7 @@ To be precise about what that does and does not guarantee, because the
 distinction matters: EVERY accessor on the view is truncated at `as_of`
 (`bars`, `closes`, `adjusted_closes`, `returns`, `latest`, `has_history`,
 `cross_section`, `marks`, `staleness_days` all route through
-`_visible_bars`, and `bar()` raises on a future date). A strategy using the
+`_cut`, and `bar()` raises on a future date). A strategy using the
 view's API cannot see the future. The view does hold a reference to the
 history in `_history`, so code that deliberately reaches through that
 private attribute can read anything; the guarantee is on the interface, not
@@ -72,12 +72,15 @@ class PointInTimeView:
         return bar
 
     def bars(self, symbol: str, lookback: int | None = None) -> tuple[Bar, ...]:
-        series = self._history._visible_bars(symbol, self.as_of)
-        if lookback is not None:
-            if lookback < 1:
-                raise ValidationError(f"lookback must be positive, got {lookback}")
-            series = series[-lookback:]
-        return series
+        if lookback is not None and lookback < 1:
+            raise ValidationError(f"lookback must be positive, got {lookback}")
+        series = self._history._by_symbol.get(symbol)
+        if not series:
+            return ()
+        cut = self._history._cut(symbol, self.as_of)
+        if lookback is None:
+            return series[:cut]
+        return series[max(0, cut - lookback):cut]
 
     def closes(self, symbol: str, lookback: int | None = None) -> tuple[Decimal, ...]:
         return tuple(b.close for b in self.bars(symbol, lookback))
@@ -105,16 +108,17 @@ class PointInTimeView:
 
     def latest(self, symbol: str) -> Bar | None:
         """The most recent bar at or before `as_of`, or None if there is none."""
-        series = self._history._visible_bars(symbol, self.as_of)
-        return series[-1] if series else None
+        cut = self._history._cut(symbol, self.as_of)
+        return self._history._by_symbol[symbol][cut - 1] if cut else None
 
     def has_history(self, symbol: str, required: int) -> bool:
-        return len(self._history._visible_bars(symbol, self.as_of)) >= required
+        return self._history._cut(symbol, self.as_of) >= required
 
     def cross_section(self) -> tuple[str, ...]:
         """Symbols that have at least one bar at or before `as_of`."""
         return tuple(
-            s for s in self._history.symbols if self._history._visible_bars(s, self.as_of)
+            s for s in self._history.symbols
+            if self._history._symbol_days[s][0] <= self.as_of
         )
 
     def marks(self) -> dict[str, Decimal]:
@@ -184,12 +188,12 @@ class PriceHistory:
         cut = bisect.bisect_right(self._days, as_of)
         return self._days[:cut]
 
-    def _visible_bars(self, symbol: str, as_of: date) -> tuple[Bar, ...]:
-        series = self._by_symbol.get(symbol)
-        if not series:
-            return ()
-        cut = bisect.bisect_right(self._symbol_days[symbol], as_of)
-        return series[:cut]
+    def _cut(self, symbol: str, as_of: date) -> int:
+        """How many of the symbol's bars are dated at or before `as_of`."""
+        days = self._symbol_days.get(symbol)
+        if not days:
+            return 0
+        return bisect.bisect_right(days, as_of)
 
     def view(self, as_of: date) -> PointInTimeView:
         if not isinstance(as_of, date):

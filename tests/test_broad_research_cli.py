@@ -61,6 +61,9 @@ def put_gate_series(w):
 
 
 def experiments(w):
+    tables = {r[0] for r in w.con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+    if "experiments" not in tables:
+        return []
     return w.con.execute(
         "SELECT strategy_name, dataset_description, evaluated_window, train_start FROM experiments"
     ).fetchall()
@@ -202,3 +205,118 @@ def test_format_table_widens_for_long_labels(warehouse):
     assert any(" + riskoff " in ln for ln in rows)
     starts = {len(ln) - len(ln.rsplit("  ", 1)[1]) for ln in rows}
     assert len(starts) == 1
+
+
+def load_ranges(warehouse, monkeypatch):
+    ranges = []
+    original = warehouse.load_bars
+
+    def spy(*args, **kwargs):
+        ranges.append((kwargs.get("start"), kwargs.get("end")))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(warehouse, "load_bars", spy)
+    return ranges
+
+
+def test_universe_file_run_loads_each_window_separately(warehouse, monkeypatch):
+    from datetime import timedelta
+
+    import signalforge.research_cli as cli
+
+    monkeypatch.setattr(cli, "WINDOW_WARMUP_DAYS", 300)
+    ranges = load_ranges(warehouse, monkeypatch)
+    output = run_research(warehouse, research(), universe=universe())
+    assert ranges == [
+        (DAYS[0], DAYS[500]),
+        (DAYS[501] - timedelta(days=300), DAYS[700]),
+    ]
+    validation = next(
+        n for n in output.run_for("validation").limitations if n.startswith("BROAD UNIVERSE")
+    )
+    assert (DAYS[501] - timedelta(days=300)).isoformat() in validation
+    assert DAYS[700].isoformat() in validation and "never loaded" in validation
+
+
+def test_validation_load_never_starts_before_load_start(warehouse, monkeypatch):
+    import signalforge.research_cli as cli
+
+    monkeypatch.setattr(cli, "WINDOW_WARMUP_DAYS", 100000)
+    ranges = load_ranges(warehouse, monkeypatch)
+    run_research(warehouse, research(), universe=universe())
+    assert ranges[1] == (DAYS[0], DAYS[700])
+
+
+def test_per_window_loading_matches_a_full_history_load(tmp_path, monkeypatch):
+    import signalforge.research_cli as cli
+
+    def outcomes(margin, name):
+        w = Warehouse(str(tmp_path / f"{name}.duckdb"))
+        seed_universe(w)
+        put_gate_series(w)
+        monkeypatch.setattr(cli, "WINDOW_WARMUP_DAYS", margin)
+        try:
+            output = run_research(w, research(), universe=universe(), overlays=True)
+        finally:
+            w.close()
+        return {
+            (run.window, o.strategy_id): (run.dataset_fingerprint, o.metrics.to_dict())
+            for run in output.runs
+            for o in run.outcomes
+        }
+
+    truncated = outcomes(300, "truncated")
+    full = outcomes(100000, "full")
+    assert len(truncated) == 26
+    assert truncated == full
+
+
+def test_a_refused_validation_load_records_nothing(warehouse, monkeypatch):
+    from signalforge.core.errors import ValidationError
+    import signalforge.research_cli as cli
+
+    original = cli._universe_bundle
+
+    def refuse_validation(*args, **kwargs):
+        if args[-1] == "validation":
+            raise ValidationError("validation load refused")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_universe_bundle", refuse_validation)
+    with pytest.raises(ValidationError, match="validation load refused"):
+        run_research(warehouse, research(), universe=universe())
+    assert experiments(warehouse) == []
+
+
+def test_a_gap_spanning_both_window_loads_is_still_refused(warehouse, monkeypatch):
+    from signalforge.core.errors import ValidationError
+    import signalforge.research_cli as cli
+
+    monkeypatch.setattr(cli, "WINDOW_WARMUP_DAYS", 30)
+    warehouse.con.execute(
+        "DELETE FROM bars WHERE symbol = 'AAA' AND trade_date > ? AND trade_date < ?",
+        [DAYS[200], DAYS[520]],
+    )
+    with pytest.raises(ValidationError, match="AAA has a .*-day gap"):
+        run_research(warehouse, research(), universe=universe())
+    assert experiments(warehouse) == []
+
+
+def test_a_folded_in_manual_split_after_train_end_runs(warehouse):
+    warehouse.record_manual_split("AAA", DAYS[600], D("2"))
+    output = run_research(warehouse, research(), universe=universe())
+    assert {r.window for r in output.runs} == {"train", "validation"}
+
+
+def test_an_applied_manual_split_after_train_end_is_refused(warehouse):
+    from signalforge.core.errors import ValidationError
+
+    warehouse.con.execute(
+        "UPDATE bars SET open = open / 2, high = high / 2, low = low / 2, close = close / 2, "
+        "adj_close = adj_close / 2 WHERE symbol = 'AAA' AND trade_date >= ?",
+        [DAYS[600]],
+    )
+    warehouse.record_manual_split("AAA", DAYS[600], D("2"))
+    with pytest.raises(ValidationError, match="manual split AAA"):
+        run_research(warehouse, research(), universe=universe())
+    assert experiments(warehouse) == []

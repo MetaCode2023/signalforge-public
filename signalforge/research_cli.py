@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -69,9 +70,14 @@ OVERLAYS_REFUSED_HOLDOUT = (
     "variants multiply the number of looks. Nothing was run and the registry is unchanged."
 )
 
+# Calendar days of history loaded before the validation window, so every
+# lookback (252-session eligibility, 200-day MA, 147-day momentum) is warm on
+# its first day and the results match a load of the whole history.
+WINDOW_WARMUP_DAYS = 1095
+
 BROAD_UNIVERSE_NOTE = (
-    "BROAD UNIVERSE {name}: {count} committed symbols, bars loaded {load_start} .. "
-    "{validation_end} only; bars after the validation window are never loaded. The "
+    "BROAD UNIVERSE {name}: {count} committed symbols, bars for this window loaded "
+    "{load_start} .. {load_end} only; bars after the validation window are never loaded. The "
     "train window here is {train_start} .. {train_end} ({years} years), shorter than "
     "the research config train window. The symbol list is the set of names "
     "that have bars in the warehouse today, so it is not a list anyone could have "
@@ -189,7 +195,7 @@ def run_research(
             )
         if universe is not None:
             bundle, specs, research = _universe_bundle(
-                warehouse, universe, research, RiskConfig().stale_data_max_age_days
+                warehouse, universe, research, RiskConfig().stale_data_max_age_days, "train"
             )
         else:
             bundle, specs = _ohlcv_bundle(warehouse, symbols, benchmark, source)
@@ -227,6 +233,12 @@ def run_research(
             windows.append("test")
 
     for window in windows:
+        if universe is not None and window != "train":
+            bundle = None  # release the train bars before loading the next window
+            bundle, _, _ = _universe_bundle(
+                warehouse, universe, research, RiskConfig().stale_data_max_age_days, window
+            )
+            output.notes.append(bundle.description)
         # The strategy-only rows exist for train and validation. The test window
         # is a single look keyed by the as-traded specs, so it gets no second row.
         run = run_window(
@@ -252,6 +264,9 @@ def run_research(
                 )
             )
         output.runs.append(run)
+    # Recorded only once every window has loaded and run: a universe run loads
+    # validation after train has run, and a refusal there must leave no rows.
+    for run in output.runs:
         output.experiment_ids.extend(_record(registry, run, config))
 
     if not run_holdout:
@@ -291,25 +306,91 @@ def _ohlcv_bundle(
     )
 
 
+def _refuse_gaps_across_windows(
+    warehouse: Warehouse, symbols: list[str], source: str, start, end
+) -> None:
+    """The concatenated-datasets gap check over the whole run, in SQL.
+
+    Each window loads its own bars, so a gap that starts before the validation
+    warmup and ends after train_end is invisible to both loads.
+    """
+    from signalforge.pipeline import GAP_REFUSE_DAYS
+
+    row = warehouse.con.execute(
+        "SELECT symbol, prev, trade_date FROM ("
+        " SELECT symbol, trade_date,"
+        "  lag(trade_date) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev"
+        " FROM bars WHERE source = ? AND trade_date BETWEEN ? AND ?"
+        f" AND symbol IN ({', '.join('?' for _ in symbols)}))"
+        " WHERE date_diff('day', prev, trade_date) >= ? ORDER BY symbol, trade_date LIMIT 1",
+        [source, start, end, *symbols, GAP_REFUSE_DAYS],
+    ).fetchone()
+    if row is not None:
+        symbol, prev, current = row
+        raise ValidationError(
+            f"{symbol} has a {(current - prev).days}-day gap between {prev} and {current} "
+            f"(source {source}). That is not a holiday: these are almost certainly two "
+            "unrelated datasets concatenated. Fix or exclude the symbol."
+        )
+
+
+def _refuse_manual_splits_train_missed(
+    warehouse: Warehouse, symbols: list[str], notes, train_end, load_end
+) -> None:
+    """Refuse a manual split the validation load applied but the train load could not see.
+
+    A manual split is applied only when the bar on its date shows the jump. The
+    train load ends at train_end, so for a split dated in the validation window
+    it never sees that bar and leaves the earlier bars unscaled.
+    """
+    for action in warehouse.load_corporate_actions(symbols=symbols, source="manual"):
+        if action.action_type != "split" or not train_end < action.effective_date <= load_end:
+            continue
+        label = f"{action.symbol} {action.effective_date} ({action.numerator}:{action.denominator})"
+        if not any(n.startswith(f"MANUAL SPLIT SKIPPED: {label}:") for n in notes):
+            raise ValidationError(
+                f"manual split {label} applies in the validation window, but the train "
+                "window loads bars only to train_end and cannot apply it, so its prices "
+                "would be unscaled. Nothing was recorded."
+            )
+
+
 def _universe_bundle(
     warehouse: Warehouse,
     universe: UniverseConfig,
     research: ResearchConfig,
     max_stale_days: int,
+    window: str,
 ) -> tuple[HistoryBundle, list[tuple[str, str, dict]], ResearchConfig]:
-    """History, specs and research config for a universe-file run.
+    """History, specs and research config for one window of a universe-file run.
 
-    Bars are loaded only up to the validation window end, so the test window
-    is never read. The returned config carries the universe train_start in
-    its splits, so the registry records the windows that were really run.
+    Each window loads only its own bars plus a warmup, so only one window's
+    history is in memory at a time, and the test window is never read. The
+    returned config carries the universe train_start in its splits, so the
+    registry records the windows that were really run.
     """
     effective = universe.effective_splits(research.splits)
     research = research.model_copy(update={"splits": effective})
     wanted = sorted(set(universe.symbols) | {universe.benchmark})
+    if window == "train":
+        _refuse_gaps_across_windows(
+            warehouse, wanted, universe.source, universe.load_start, effective.validation_end
+        )
+        load_start, load_end = universe.load_start, effective.train_end
+    else:
+        load_start = max(
+            universe.load_start,
+            effective.validation_start - timedelta(days=WINDOW_WARMUP_DAYS),
+        )
+        load_end = effective.validation_end
     loaded = ohlcv_history(
         warehouse, wanted, sources=[universe.source], price_basis="adjusted",
-        start=universe.load_start, end=effective.validation_end,
+        start=load_start, end=load_end,
     )
+    if window != "train":
+        _refuse_manual_splits_train_missed(
+            warehouse, wanted, loaded.limitations, effective.train_end, load_end
+        )
     if universe.benchmark not in loaded.history.symbols:
         raise ValidationError(
             f"benchmark {universe.benchmark} has no {universe.source} bars in the warehouse; "
@@ -320,8 +401,8 @@ def _universe_bundle(
         SURVIVORSHIP_NOTE,
         EXPOSURE_MISMATCH_NOTE,
         BROAD_UNIVERSE_NOTE.format(
-            name=universe.name, count=len(universe.symbols), load_start=universe.load_start,
-            validation_end=effective.validation_end, train_start=effective.train_start,
+            name=universe.name, count=len(universe.symbols), load_start=load_start,
+            load_end=load_end, train_start=effective.train_start,
             train_end=effective.train_end, years=years,
         ),
         ELIGIBILITY_NOTE.format(

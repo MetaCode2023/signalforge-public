@@ -97,3 +97,61 @@ def render_markdown(record: dict) -> str:
             f"{_lift(s['confidence_lift'])} |"
         )
     return "\n".join(lines) + "\n"
+
+
+MAX_CONE_PATHS = 60
+MAX_EQUITY_POINTS = 160
+
+
+def cone_payload(forecast, trend_agreement: float) -> dict:
+    """A forward cone as fractional returns from the origin close. No price level.
+
+    Up to 60 paths are kept, chosen evenly by where they end, so the shape of
+    the full cone survives; the bands and the up count use every path.
+    """
+    import numpy as np
+
+    from signalforge.forecasting.cone import read_cone
+
+    rets = forecast.paths / forecast.last_close - 1.0
+    order = np.argsort(rets[:, -1])
+    keep = order[np.unique(np.linspace(0, len(order) - 1, min(MAX_CONE_PATHS, len(order))).round().astype(int))]
+    r = read_cone(forecast, trend_agreement)
+
+    def series(values):
+        return [round(float(v), 4) for v in values]
+
+    return {
+        "symbol": forecast.symbol, "as_of": f"{forecast.as_of.isoformat()}T00:00:00Z",
+        "forecaster": forecast.forecaster_id, "horizon": forecast.horizon,
+        "p10": series(np.quantile(rets, 0.1, axis=0)), "p50": series(np.quantile(rets, 0.5, axis=0)),
+        "p90": series(np.quantile(rets, 0.9, axis=0)), "paths": [series(rets[k]) for k in keep],
+        "paths_up": r.paths_up, "n_paths": r.n_paths, "regime": r.regime.value, "direction": r.direction.value,
+    }
+
+
+def _thin(values, budget: int = MAX_EQUITY_POINTS) -> list[float]:
+    if len(values) <= budget:
+        return [round(float(v), 2) for v in values]
+    step = (len(values) - 1) / (budget - 1)
+    return [round(float(values[round(i * step)]), 2) for i in range(budget)]
+
+
+def backtest_payload(backtest: dict, start, end) -> dict | None:
+    """Simulated equity of the TRENDING-only rule against buy-and-hold."""
+    hold = backtest.get("buy_and_hold")
+    rule_key = next((k for k in backtest if k != "buy_and_hold"), None)
+    if hold is None or rule_key is None:
+        return None
+    rule = backtest[rule_key]
+    out = {
+        "rule_id": rule_key, "period_start": f"{start}T00:00:00Z",
+        "period_end": f"{end}T00:00:00Z", "hold_final": round(hold["final"], 2),
+        "rule_final": round(rule["final"], 2), "hold_equity": _thin(hold["equity"]),
+        "rule_equity": _thin(rule["equity"]),
+    }
+    if hold.get("sharpe") is not None:
+        out["hold_sharpe"] = round(hold["sharpe"], 4)
+    if rule.get("sharpe") is not None:
+        out["rule_sharpe"] = round(rule["sharpe"], 4)
+    return out

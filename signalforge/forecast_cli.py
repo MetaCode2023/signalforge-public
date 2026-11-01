@@ -147,10 +147,57 @@ def cmd_trial(args) -> int:
     table = render_markdown(record)
     (out / f"{stem}.md").write_text(table, encoding="utf-8")
     print(table)
+    if args.no_dashboard and not (args.report or args.report_dry_run):
+        return 0
+    data = build_page(args, record, hist.history, results, forecasters, symbols, start, end, bundle)
     if not args.no_dashboard:
-        page = build_page(args, record, hist.history, results, forecasters, symbols, start, end, bundle)
-        print("wrote", page)
+        from signalforge.dashboard.forecast_page import write_forecast_page
+
+        print("wrote", write_forecast_page(args.dashboard_out, data))
+    if args.report or args.report_dry_run:
+        return send_report(args, record, data, symbols, start, end)
     return 0
+
+
+def send_report(args, record, data, symbols, start, end) -> int:
+    """Post the Crucible report (scores and a forward cone in returns, no prices)."""
+    from datetime import datetime, timezone
+
+    from signalforge.forecasting.report import backtest_payload, cone_payload
+    from signalforge.reports import events as ev
+    from signalforge.reports import sender
+
+    commit = current_git_commit()
+    if not ev._SHA.match(commit):
+        print("refused: the report needs a git commit to cite; run from a git checkout", file=sys.stderr)
+        return 2
+    now = datetime.now(timezone.utc)
+    event = ev.build_forecast_trial(
+        record, now, commit_sha=commit, symbols=symbols, window=(start, end),
+        horizon=args.horizon, n_paths=args.paths, trend_agreement=args.trend_agreement,
+        cone=cone_payload(data.live[0].forecast, args.trend_agreement) if data.live else None,
+        backtest=backtest_payload(data.backtest, start, end) if data.backtest else None,
+    )
+    try:
+        ev.validate_event(event)
+    except ev.EventInvalid as exc:
+        print(f"refused: the Crucible report would be rejected: {exc}", file=sys.stderr)
+        return 2
+    if args.report_dry_run:
+        print(ev.serialize(event).decode("utf-8"))
+        print("dry run: Crucible report valid, nothing sent")
+        return 0
+    try:
+        credentials = sender.load_credentials()
+    except sender.MissingCredentials as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    import requests
+
+    outcome = sender.send(event, requests.Session(), credentials)
+    state = "accepted" if outcome.ok else f"FAILED {outcome.error_code or outcome.status_code}"
+    print(f"Crucible report {outcome.event_id}: {state}")
+    return 0 if outcome.ok else 1
 
 
 def _equity_points(result, budget: int = 300) -> list[float]:
@@ -159,8 +206,8 @@ def _equity_points(result, budget: int = 300) -> list[float]:
     return eq[::step] + ([eq[-1]] if (len(eq) - 1) % step else [])
 
 
-def build_page(args, record, history, results, forecasters, symbols, start, end, bundle) -> Path:
-    """The Kronos Trial dashboard tab: live cones, replays, scores, optional engine run."""
+def build_page(args, record, history, results, forecasters, symbols, start, end, bundle):
+    """The Crucible tab's data: live cones, replays, scores, optional engine run."""
     from decimal import Decimal
 
     from signalforge.backtesting.engine import BacktestEngine
@@ -229,11 +276,8 @@ def build_page(args, record, history, results, forecasters, symbols, start, end,
                 "final": float(result.final_equity),
                 "sharpe": None if m.sharpe is None else float(m.sharpe),
             }
-    return write_forecast_page(
-        args.dashboard_out,
-        ForecastPageData(record=record, live=live, replays=replays, backtest=backtest,
-                         note=" ".join(notes) or None),
-    )
+    return ForecastPageData(record=record, live=live, replays=replays, backtest=backtest,
+                            note=" ".join(notes) or None)
 
 
 def cmd_cone(args) -> int:
@@ -310,6 +354,10 @@ def main(argv=None) -> int:
     t.add_argument("--no-dashboard", action="store_true")
     t.add_argument("--backtest", action="store_true",
                    help="also run the TRENDING-only rule against buy-and-hold in the engine")
+    t.add_argument("--report", action="store_true",
+                   help="send the scores to the Cloudflare dashboard's Crucible tab (no prices)")
+    t.add_argument("--report-dry-run", action="store_true",
+                   help="build and validate the Crucible report, print it, send nothing")
     c = sub.add_parser("cone", help="forward cone from the latest bar")
     _add_common(c)
     c.add_argument("--symbol", required=True)

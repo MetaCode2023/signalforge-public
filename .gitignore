@@ -36,3 +36,8 @@ data/archive/**
 
 # Local staging for the D1 market-data mirror (SQL files, deleted after import).
 data/mirror/
+
+# Forecast models (downloaded weights and upstream source) and per-forecast
+# trial detail, which carries licensed-derived realized prices.
+models/
+data/forecast_trials/

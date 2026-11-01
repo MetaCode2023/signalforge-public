@@ -98,6 +98,10 @@ figcaption{font-size:14px;color:var(--muted)}
 .bar{fill:var(--accent)}
 .axis{stroke:var(--muted);stroke-width:1}
 .tick,.label{fill:var(--fg);font-size:15px}
+.tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--line)}
+.tabs a{min-height:44px;display:inline-flex;align-items:center;padding:0 14px;text-decoration:none;color:var(--muted);
+border-bottom:3px solid transparent;margin-bottom:-1px;font-weight:600}
+.tabs a[aria-current="page"]{color:var(--fg);border-bottom-color:var(--accent)}
 @media (max-width:720px){
 table,thead,tbody,tr,td{display:block}
 thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
@@ -116,6 +120,19 @@ NAV = (
     ("risk-center", "Risk Center"),
     ("trade-ledger", "Trade Ledger"),
 )
+
+
+TAB_NAV = (("index.html", "Operator"), ("forecast.html", "Crucible"))
+
+
+def tab_strip(current: str) -> str:
+    """Page tabs. Plain links between two static files; no script."""
+    links = []
+    for href, label in TAB_NAV:
+        current_html = ' aria-current="page"' if href == current else ""
+        links.append(f'<a href="{esc(href)}"{current_html}>{esc(label)}</a>')
+    links_html = "".join(links)
+    return f'<nav class="tabs" aria-label="Pages">{links_html}</nav>'
 
 
 def open_readonly(path) -> Warehouse:
@@ -213,6 +230,7 @@ def render_dashboard(
     nav_html = "".join(f'<a href="#{esc(sid)}">{esc(label)}</a>' for sid, label in NAV)
     stamp = now.strftime("%Y-%m-%d %H:%M")
     css_html = CSS
+    tabs_html = tab_strip("index.html")
     return (
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -229,6 +247,7 @@ def render_dashboard(
         '<li><span class="key prov-paper">PAPER SIMULATION</span> a forward simulation against a virtual book. Still not real money.</li>'
         '<li><span class="key prov-na">DATA UNAVAILABLE</span> nothing exists to show; the reason is stated beside it.</li>'
         "</ul>"
+        f"{tabs_html}"
         f"<nav>{nav_html}</nav></header>"
         f"<main>{sections_html}</main>"
         '<footer><p class="muted">Static page. It loads nothing from the network and runs no script.</p></footer>'

@@ -78,6 +78,7 @@ signalforge/
 ├── paper/        the only venue: a simulated broker, hash-chained ledger
 ├── learning/     experiment registry, walk-forward, overfitting, promotion gate
 ├── dashboard/    generated static HTML, inline SVG charts, no JavaScript
+├── forecasting/  path forecasters (Kronos, bootstrap, random walk) and the forecast trial
 └── pipeline.py   warehouse -> runnable histories -> the baseline suite
 config/           research.yaml, risk.yaml, data_sources.yaml
 docs/             architecture, decisions, local development
@@ -169,5 +170,13 @@ decisions are not re-litigated from memory later.
 data does and does not support. The short version: there is no per-symbol
 OHLCV history available from any keyless, terms-clean source, so the current
 results are a single-instrument proxy study.
+
+## Forecast trials
+
+`python -m signalforge.forecast_cli trial` puts a path forecaster on trial
+against two nulls on the train or validation window. The first run, with the
+nulls only, is in [`reports/KRONOS_TRIAL.md`](reports/KRONOS_TRIAL.md); it
+sets the bar Kronos has to clear and has the commands to run Kronos itself.
+Each trial also refreshes the dashboard's Crucible tab.
 
 A private D1 mirror of the market-data tables (not for public access) is described in [`docs/D1_MARKET_MIRROR.md`](docs/D1_MARKET_MIRROR.md).

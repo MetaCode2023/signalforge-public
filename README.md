@@ -177,5 +177,6 @@ results are a single-instrument proxy study.
 against two nulls on the train or validation window. The first run, with the
 nulls only, is in [`reports/KRONOS_TRIAL.md`](reports/KRONOS_TRIAL.md); it
 sets the bar Kronos has to clear and has the commands to run Kronos itself.
+Each trial also refreshes the dashboard's Crucible tab.
 
 A private D1 mirror of the market-data tables (not for public access) is described in [`docs/D1_MARKET_MIRROR.md`](docs/D1_MARKET_MIRROR.md).

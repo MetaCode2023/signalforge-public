@@ -1,4 +1,7 @@
-"""The Kronos Trial tab: forecast cones, what happened next, and the scores.
+"""The Crucible tab: forecast cones, what happened next, and the scores.
+
+Every forecaster, Kronos included, goes through the fire here before anything
+trades on it.
 
 Same rules as the operator page: static HTML, no script, nothing loaded from
 the network, every chart a <figure> whose caption states its numbers, and
@@ -93,6 +96,11 @@ animation:draw 1s ease-out 1.5s forwards;filter:drop-shadow(0 0 4px rgba(255,255
 .fan .tag{fill:#0b0e13;stroke:#3a4350}
 .fan .tag.mid{stroke:#f3f5f8}
 .fan .tagtext{fill:#cfd6df;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.brand{display:grid;gap:2px;margin:14px 0 4px}
+.mark{font-weight:900;letter-spacing:.34em;font-size:1.7rem;line-height:1.1;
+background:linear-gradient(90deg,var(--up),#f5b041,var(--up));background-size:200% 100%;
+-webkit-background-clip:text;background-clip:text;color:transparent;animation:heat 5s ease-in-out infinite alternate}
+@keyframes heat{from{background-position:0% 0}to{background-position:100% 0}}
 .read{display:grid;gap:10px}
 .regime{font-size:1.35rem;font-weight:800;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
 .regime i{width:11px;height:11px;border-radius:50%;background:var(--sc-down);box-shadow:0 0 12px var(--sc-down)}
@@ -129,7 +137,7 @@ animation:draw 1s ease-out 1.5s forwards;filter:drop-shadow(0 0 4px rgba(255,255
 @media (prefers-reduced-motion: reduce){
 .fan .p,.fan .med,.fan .real,.eq .l{animation:none;stroke-dashoffset:0}
 .fan .band{animation:none;opacity:1}.cells b{animation:none;transform:none}
-.bars .b,.figs div,.fan .now,.fan .nowdot{animation:none}
+.bars .b,.figs div,.fan .now,.fan .nowdot,.mark{animation:none}
 }
 """
 
@@ -581,12 +589,14 @@ def render_forecast_page(data: ForecastPageData, now: datetime | None = None) ->
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>SIGNALFORGE Kronos Trial</title>"
+        "<title>SIGNALFORGE Crucible</title>"
         f"<style>{css_html}</style></head><body>"
         "<header><h1>SIGNALFORGE operator dashboard</h1>"
         '<p class="sim-banner" role="note"><strong>SIMULATION ONLY.</strong> '
         "Nothing on this page is live trading. A forecast cone is a research statistic, not an order.</p>"
         f"{tabs_html}"
+        '<div class="brand"><span class="mark">CRUCIBLE</span>'
+        '<span class="muted">Every forecaster goes through the fire before anything trades on it.</span></div>'
         f'<p class="muted">Rendered {esc(now.strftime("%Y-%m-%d %H:%M"))} local time from the last forecast trial.</p>'
         f"{note_html}</header>"
         f"<main>{body_html}</main>"

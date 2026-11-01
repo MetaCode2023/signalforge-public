@@ -460,7 +460,7 @@ Choices that are not obvious:
   ordinary `BaseStrategy` that runs through the engine, but it lives outside
   `strategies/`, and a test fails if `paper/`, `strategies/` or `risk/`
   import the forecasting package.
-- **The trial has its own dashboard tab.** `forecast_cli trial` writes
+- **The trial has its own dashboard tab, Crucible.** `forecast_cli trial` writes
   `dashboard/build/forecast.html`, linked from the operator page by a tab
   strip. It keeps the operator page's rules: no script, nothing from the
   network, a caption on every chart, every interpolation escaped (the

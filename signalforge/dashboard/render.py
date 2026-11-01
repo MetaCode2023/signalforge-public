@@ -122,7 +122,7 @@ NAV = (
 )
 
 
-TAB_NAV = (("index.html", "Operator"), ("forecast.html", "Kronos Trial"))
+TAB_NAV = (("index.html", "Operator"), ("forecast.html", "Crucible"))
 
 
 def tab_strip(current: str) -> str:

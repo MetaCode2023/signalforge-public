@@ -8,6 +8,7 @@ from pathlib import Path
 import duckdb
 
 from signalforge.config.models import load_all
+from signalforge.dashboard.forecast_page import ForecastPageData, write_forecast_page
 from signalforge.dashboard.render import open_readonly, write_dashboard
 from signalforge.dashboard.serve import serve_forever
 
@@ -35,6 +36,10 @@ def main(argv=None) -> int:
             note = " ".join(("no warehouse could be opened at", str(args.db), "because", str(exc)))
     out = write_dashboard(args.out, warehouse=warehouse, config=load_all(), warehouse_note=note)
     print("wrote", out, out.stat().st_size, "bytes")
+    forecast_tab = out.parent / "forecast.html"
+    if not forecast_tab.exists():
+        # The tab link must never 404. A trial overwrites this with real results.
+        write_forecast_page(forecast_tab, ForecastPageData())
     if args.serve:
         print("serving", out.parent, "on", args.host, "port", args.port)
         serve_forever(out.parent, args.host, args.port)

@@ -424,3 +424,47 @@ Neither row is the answer. As traded is what the guard would have allowed.
 Strategy only shows what the signal did without the guard and will usually
 look better, with larger drawdowns that the breaker exists to prevent. Lockout
 notes stay on the as-traded rows.
+
+## 16. A forecaster is put on trial before anything trades on it
+
+`signalforge/forecasting/` adds probabilistic path forecasters (Kronos, a
+block bootstrap, a driftless random walk) and a walk-forward trial that
+scores their cones: 10-90 coverage, PIT histogram, CRPS, and directional hit
+rate bucketed by path agreement, regime and spread.
+
+The nulls are the point. A cone that covers about 80% and a hit rate that
+rises with agreement both come free from a bootstrap of the last two years
+of returns, and neither beats calling UP on every window (see
+`reports/KRONOS_TRIAL.md`). A model's confidence display means something only
+when it beats them on the same origins.
+
+Choices that are not obvious:
+
+- **Forecasters get a `ContextWindow`, never a view.** The window is cut from
+  `history.view(origin)`, ends on the origin, owns a frozen copy of its
+  arrays, and refuses a short or stale history. The trial reads realized
+  closes itself and refuses any outcome dated after the window's end.
+- **Kronos samples paths one at a time.** Upstream `predict(sample_count=N)`
+  returns the mean of N samples, one line rather than a cone. The adapter
+  repeats the context along the batch axis with `sample_count=1`, and
+  `kronos-check` fails if the paths collapse.
+- **Weights come from disk only.** No hub ids, so no code path in the
+  package opens a connection; a test pins that no forecasting module imports
+  a network library.
+- **The test window is refused by the CLI.** Trials run on train or
+  validation. The holdout is spent once, through `research_cli --run-holdout`.
+- **The lift figure has an evidence floor.** TRENDING minus CHOPPY hit rate
+  is reported only when both sides have 30 or more calls, the same floor as
+  `min_trades_for_evidence`.
+- **The cone strategy is research-only.** `ForecastConeStrategy` is an
+  ordinary `BaseStrategy` that runs through the engine, but it lives outside
+  `strategies/`, and a test fails if `paper/`, `strategies/` or `risk/`
+  import the forecasting package.
+- **The trial has its own dashboard tab.** `forecast_cli trial` writes
+  `dashboard/build/forecast.html`, linked from the operator page by a tab
+  strip. It keeps the operator page's rules: no script, nothing from the
+  network, a caption on every chart, every interpolation escaped (the
+  scanner now covers it). The motion is CSS only and switches off under
+  `prefers-reduced-motion`. `python -m signalforge.dashboard` writes a
+  DATA UNAVAILABLE version when no trial has run, so the tab never 404s.
+  It stays local: the Cloudflare dashboard Worker is not given price data.

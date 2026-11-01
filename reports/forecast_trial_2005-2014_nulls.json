@@ -1,0 +1,341 @@
+{
+  "kind": "forecast_trial",
+  "provenance": {
+    "dataset": "8 symbols, Tiingo adjusted closes via D1 mirror, close-only, 2002-11-04..2014-12-31"
+  },
+  "forecasters": [
+    {
+      "forecaster": "random_walk",
+      "parameters": {
+        "context_length": "512",
+        "drift": "0"
+      },
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "MSFT",
+        "JPM",
+        "XOM",
+        "KO",
+        "WMT"
+      ],
+      "window": [
+        "2005-01-01",
+        "2014-12-31"
+      ],
+      "horizon": 24,
+      "n_paths": 100,
+      "stride": 24,
+      "seed": 20261031,
+      "trend_agreement": 0.65,
+      "skipped": {},
+      "summary": {
+        "forecaster_id": "random_walk",
+        "n": 832,
+        "n_independent": 832,
+        "coverage": 0.829327,
+        "coverage_interval": [
+          0.802263,
+          0.853364
+        ],
+        "mean_crps": 0.038221,
+        "hit_rate": 0.507212,
+        "hit_interval": [
+          0.473285,
+          0.541072
+        ],
+        "base_rate_up": 0.611779,
+        "mean_spread": 0.193563,
+        "trending_share": 0.003606,
+        "pit_histogram": [
+          0.063702,
+          0.0625,
+          0.073317,
+          0.091346,
+          0.091346,
+          0.15024,
+          0.13101,
+          0.120192,
+          0.116587,
+          0.09976
+        ],
+        "by_agreement": [
+          {
+            "label": "50-60% agree",
+            "n": 795,
+            "hits": 403,
+            "mean_realized_return": 0.014159,
+            "interval": [
+              0.472215,
+              0.541555
+            ],
+            "hit_rate": 0.506918
+          },
+          {
+            "label": "60-70% agree",
+            "n": 37,
+            "hits": 19,
+            "mean_realized_return": -0.000593,
+            "interval": [
+              0.358946,
+              0.665538
+            ],
+            "hit_rate": 0.513514
+          },
+          {
+            "label": "70-80% agree",
+            "n": 0,
+            "hits": 0,
+            "mean_realized_return": null,
+            "interval": [
+              null,
+              null
+            ],
+            "hit_rate": null
+          },
+          {
+            "label": "80-100% agree",
+            "n": 0,
+            "hits": 0,
+            "mean_realized_return": null,
+            "interval": [
+              null,
+              null
+            ],
+            "hit_rate": null
+          }
+        ],
+        "by_regime": [
+          {
+            "label": "TRENDING",
+            "n": 3,
+            "hits": 3,
+            "mean_realized_return": 0.030599,
+            "interval": [
+              0.438494,
+              1.0
+            ],
+            "hit_rate": 1.0
+          },
+          {
+            "label": "CHOPPY",
+            "n": 829,
+            "hits": 419,
+            "mean_realized_return": 0.013441,
+            "interval": [
+              0.471447,
+              0.539359
+            ],
+            "hit_rate": 0.505428
+          }
+        ],
+        "by_spread": [
+          {
+            "label": "tight spread",
+            "n": 278,
+            "hits": 130,
+            "mean_realized_return": 0.00845,
+            "interval": [
+              0.409813,
+              0.526321
+            ],
+            "hit_rate": 0.467626
+          },
+          {
+            "label": "middle spread",
+            "n": 277,
+            "hits": 148,
+            "mean_realized_return": 0.008866,
+            "interval": [
+              0.475484,
+              0.592169
+            ],
+            "hit_rate": 0.534296
+          },
+          {
+            "label": "wide spread",
+            "n": 277,
+            "hits": 144,
+            "mean_realized_return": 0.023212,
+            "interval": [
+              0.461151,
+              0.578017
+            ],
+            "hit_rate": 0.519856
+          }
+        ],
+        "notes": [],
+        "confidence_lift": null
+      }
+    },
+    {
+      "forecaster": "block_bootstrap",
+      "parameters": {
+        "context_length": "512",
+        "block": "5"
+      },
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "MSFT",
+        "JPM",
+        "XOM",
+        "KO",
+        "WMT"
+      ],
+      "window": [
+        "2005-01-01",
+        "2014-12-31"
+      ],
+      "horizon": 24,
+      "n_paths": 100,
+      "stride": 24,
+      "seed": 20261031,
+      "trend_agreement": 0.65,
+      "skipped": {},
+      "summary": {
+        "forecaster_id": "block_bootstrap",
+        "n": 832,
+        "n_independent": 832,
+        "coverage": 0.810096,
+        "coverage_interval": [
+          0.782042,
+          0.8353
+        ],
+        "mean_crps": 0.037914,
+        "hit_rate": 0.549279,
+        "hit_interval": [
+          0.515319,
+          0.582785
+        ],
+        "base_rate_up": 0.611779,
+        "mean_spread": 0.177243,
+        "trending_share": 0.264423,
+        "pit_histogram": [
+          0.100962,
+          0.072115,
+          0.100962,
+          0.103365,
+          0.106971,
+          0.105769,
+          0.120192,
+          0.102163,
+          0.102163,
+          0.085337
+        ],
+        "by_agreement": [
+          {
+            "label": "50-60% agree",
+            "n": 463,
+            "hits": 240,
+            "mean_realized_return": 0.012831,
+            "interval": [
+              0.472881,
+              0.563534
+            ],
+            "hit_rate": 0.518359
+          },
+          {
+            "label": "60-70% agree",
+            "n": 274,
+            "hits": 159,
+            "mean_realized_return": 0.013692,
+            "interval": [
+              0.521141,
+              0.637223
+            ],
+            "hit_rate": 0.580292
+          },
+          {
+            "label": "70-80% agree",
+            "n": 92,
+            "hits": 55,
+            "mean_realized_return": 0.014178,
+            "interval": [
+              0.495658,
+              0.692152
+            ],
+            "hit_rate": 0.597826
+          },
+          {
+            "label": "80-100% agree",
+            "n": 3,
+            "hits": 3,
+            "mean_realized_return": 0.079314,
+            "interval": [
+              0.438494,
+              1.0
+            ],
+            "hit_rate": 1.0
+          }
+        ],
+        "by_regime": [
+          {
+            "label": "TRENDING",
+            "n": 220,
+            "hits": 129,
+            "mean_realized_return": 0.008729,
+            "interval": [
+              0.520347,
+              0.649416
+            ],
+            "hit_rate": 0.586364
+          },
+          {
+            "label": "CHOPPY",
+            "n": 612,
+            "hits": 328,
+            "mean_realized_return": 0.01522,
+            "interval": [
+              0.496335,
+              0.575112
+            ],
+            "hit_rate": 0.535948
+          }
+        ],
+        "by_spread": [
+          {
+            "label": "tight spread",
+            "n": 278,
+            "hits": 161,
+            "mean_realized_return": 0.009675,
+            "interval": [
+              0.520409,
+              0.635707
+            ],
+            "hit_rate": 0.579137
+          },
+          {
+            "label": "middle spread",
+            "n": 277,
+            "hits": 152,
+            "mean_realized_return": 0.006357,
+            "interval": [
+              0.489866,
+              0.606274
+            ],
+            "hit_rate": 0.548736
+          },
+          {
+            "label": "wide spread",
+            "n": 277,
+            "hits": 144,
+            "mean_realized_return": 0.024492,
+            "interval": [
+              0.461151,
+              0.578017
+            ],
+            "hit_rate": 0.519856
+          }
+        ],
+        "notes": [],
+        "confidence_lift": 0.050416
+      }
+    }
+  ],
+  "crps_skill_vs_random_walk": {
+    "block_bootstrap": 0.008037
+  }
+}

@@ -8,6 +8,7 @@ from pathlib import Path
 import duckdb
 
 from signalforge.config.models import load_all
+from signalforge.dashboard.assay_page import write_assay_page
 from signalforge.dashboard.forecast_page import ForecastPageData, write_forecast_page
 from signalforge.dashboard.render import open_readonly, write_dashboard
 from signalforge.dashboard.serve import serve_forever
@@ -40,6 +41,9 @@ def main(argv=None) -> int:
     if not forecast_tab.exists():
         # The tab link must never 404. A trial overwrites this with real results.
         write_forecast_page(forecast_tab, ForecastPageData())
+    assay_tab = out.parent / "assay.html"
+    if not assay_tab.exists():
+        write_assay_page(assay_tab, None)
     if args.serve:
         print("serving", out.parent, "on", args.host, "port", args.port)
         serve_forever(out.parent, args.host, args.port)

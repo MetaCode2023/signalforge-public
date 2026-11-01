@@ -148,3 +148,29 @@ providers:
       free WIKI price table has been frozen since 2018. Recorded as a
       candidate rather than a live source. Revisit only if a key appears and
       pre-2018 history is wanted.
+
+  sec_insiders:
+    kind: filings
+    status: active
+    enabled: true
+    requires_key: false
+    base_url: "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
+    licence_note: >-
+      SEC Insider Transactions Data Sets: quarterly zips flattened from the XML
+      of Forms 3, 4 and 5, from 2006 Q1. Public data published by a US
+      government agency, with no licence restriction on use or redistribution.
+      The SEC disclaims accuracy and says the files are not a substitute for
+      the original filings.
+    terms_url: "https://www.sec.gov/os/accessing-edgar-data"
+    rate_limit_per_minute: 60
+    notes: >-
+      Added 2026-11-01 for the Assay insider study (insider_cli). Format
+      confirmed from the SEC readme and listing page on 2026-11-01:
+      tab-delimited UTF-8, DD-MON-YYYY dates, SUBMISSION / REPORTINGOWNER /
+      NONDERIV_TRANS joined on ACCESSION_NUMBER. The two newest quarters
+      (2026q2, 2026q3) sit under /files/datastandardsinnovation/ instead of
+      /files/structureddata/; the downloader tries both. The fair-access policy
+      asks for a declared User-Agent with a contact address and under 10
+      requests a second; the downloader sends user_agent above and pauses
+      between files. Not reachable from the cloud build sandbox, so the first
+      download runs on the operator's machine.

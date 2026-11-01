@@ -41,3 +41,7 @@ data/mirror/
 # trial detail, which carries licensed-derived realized prices.
 models/
 data/forecast_trials/
+
+# Parsed SEC insider purchases and per-trade Assay detail (rebuildable).
+data/insiders/
+data/insider_trials/

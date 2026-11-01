@@ -79,6 +79,7 @@ signalforge/
 ├── learning/     experiment registry, walk-forward, overfitting, promotion gate
 ├── dashboard/    generated static HTML, inline SVG charts, no JavaScript
 ├── forecasting/  path forecasters (Kronos, bootstrap, random walk) and the forecast trial
+├── insiders/     Assay: copying insiders' SEC Form 4 purchases, honest vs hindsight
 └── pipeline.py   warehouse -> runnable histories -> the baseline suite
 config/           research.yaml, risk.yaml, data_sources.yaml
 docs/             architecture, decisions, local development
@@ -178,5 +179,12 @@ against two nulls on the train or validation window. The first run, with the
 nulls only, is in [`reports/KRONOS_TRIAL.md`](reports/KRONOS_TRIAL.md); it
 sets the bar Kronos has to clear and has the commands to run Kronos itself.
 Each trial also refreshes the dashboard's Crucible tab.
+
+## Assay: copying insiders
+
+`python -m signalforge.insider_cli download`, then `build`, then `trial` tests
+whether copying company insiders' disclosed purchases beats the market, judged
+only on what was knowable at the time, next to the hindsight method copy-trading
+pitches use. Method and how to run: [`reports/INSIDER_ASSAY.md`](reports/INSIDER_ASSAY.md).
 
 A private D1 mirror of the market-data tables (not for public access) is described in [`docs/D1_MARKET_MIRROR.md`](docs/D1_MARKET_MIRROR.md).

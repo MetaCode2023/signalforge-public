@@ -143,6 +143,15 @@ validation only, both rows (as traded and strategy only), recorded in the
 registry. The allocation's 10% single-name cap applies to this run alone; it
 refuses `--run-holdout`. Options: `--db PATH`, `--allocation-file PATH`.
 
+```bash
+python -m signalforge.allocation_cli --state
+```
+
+Shows where the rule stands today (which ETFs it holds this month, each one's
+12-month return at the decision and now, and how far it is below its one-year
+high) and writes the **Allocation** dashboard tab to
+`dashboard/build/allocation.html`. It runs no research and records nothing.
+
 ## 4. Run paper trading
 
 Nothing is approved for paper trading, so with no arguments it refuses:

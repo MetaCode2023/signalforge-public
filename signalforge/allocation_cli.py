@@ -42,6 +42,7 @@ from signalforge.research_cli import (
 )
 
 DEFAULT_ALLOCATION = Path("config") / "allocations" / "assets10.yaml"
+DEFAULT_STATE_OUT = Path("dashboard") / "build" / "allocation.html"
 
 # Calendar days loaded before the validation window: enough for a 252-session
 # lookback plus the month before the first decision, with room for holidays.
@@ -58,8 +59,47 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m signalforge.allocation_cli")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--allocation-file", type=Path, default=DEFAULT_ALLOCATION)
+    parser.add_argument(
+        "--state",
+        action="store_true",
+        help="show where the rule stands today and write the Allocation tab; runs no research",
+    )
+    parser.add_argument("--out", type=Path, default=DEFAULT_STATE_OUT)
     parser.add_argument("--run-holdout", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
+
+
+def format_state(state) -> str:
+    from signalforge.allocation_state import STATE_TEXT
+
+    def pct(v):
+        return "n/a" if v is None else f"{float(v) * 100:+.1f}%"
+
+    lines = [
+        f"allocation {state.name}: data through {state.as_of}, decided on the close of {state.reference}",
+        f"invested {float(state.invested) * 100:.0f}%, next decision on the first session of "
+        f"{state.next_decision_month:%B %Y}",
+        f"{'fund':<6}{'this month':<20}{'12m @ decision':>16}{'12m today':>11}{'below 1y high':>15}",
+    ]
+    for a in state.assets:
+        flag = "  <- leaning the other way" if a.flip_watch else ""
+        stale = "  STALE" if a.stale else ""
+        lines.append(
+            f"{a.symbol:<6}{STATE_TEXT[a.state]:<20}{pct(a.decided_return):>16}{pct(a.current_return):>11}"
+            f"{pct(a.below_high):>15}{flag}{stale}"
+        )
+    return "\n".join(lines)
+
+
+def run_state(warehouse: Warehouse, allocation: AllocationConfig, out: Path) -> int:
+    from signalforge.allocation_state import market_state
+    from signalforge.dashboard.allocation_page import write_allocation_page
+
+    state = market_state(warehouse, allocation)
+    print(format_state(state))
+    written = write_allocation_page(out, state)
+    print(f"wrote {written}")
+    return 0
 
 
 def allocation_bundle(
@@ -141,13 +181,20 @@ def main(argv=None) -> int:
     config = load_all()
     try:
         allocation = load_allocation(args.allocation_file)
-        allocation.effective_splits(config.research.splits)
+        if not args.state:  # the state runs no window, so the train window does not bind it
+            allocation.effective_splits(config.research.splits)
     except ConfigError as exc:
         print(f"refused: {exc}")
         return 2
     config = config.model_copy(update={"data_sources": _safe_data_sources()})
     warehouse = Warehouse(str(args.db))
     try:
+        if args.state:
+            try:
+                return run_state(warehouse, allocation, args.out)
+            except (ValidationError, ValueError) as exc:
+                print(f"refused: {exc}")
+                return 2
         try:
             output = run_allocation(warehouse, allocation, config)
         except ValidationError as exc:

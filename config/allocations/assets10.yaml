@@ -20,3 +20,14 @@ train_start: 1993-02-01
 lookback: 252
 target_weight: "0.10"                 # ten names, fully invested when every trend is up
 max_single_name_exposure: "0.10"      # replaces the 5% stock-book cap for this run only
+classes:                              # labels for the Allocation dashboard tab
+  SPY: US large-cap stocks
+  IWM: US small-cap stocks
+  EFA: Developed-market stocks
+  EEM: Emerging-market stocks
+  IEF: 7-10 year Treasuries
+  TLT: 20+ year Treasuries
+  LQD: Investment-grade corporate bonds
+  HYG: High-yield corporate bonds
+  GLD: Gold
+  VNQ: US real estate (REITs)

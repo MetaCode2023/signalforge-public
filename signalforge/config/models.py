@@ -450,6 +450,7 @@ class AllocationConfig(_Frozen):
     lookback: int
     target_weight: Decimal
     max_single_name_exposure: Decimal
+    classes: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("name")
     @classmethod
@@ -491,6 +492,9 @@ class AllocationConfig(_Frozen):
                 f"target_weight {self.target_weight} must be positive and within "
                 f"max_single_name_exposure {self.max_single_name_exposure}"
             )
+        unknown = sorted(set(self.classes) - set(self.symbols))
+        if unknown:
+            raise ConfigError(f"classes name symbols that are not in the allocation: {unknown}")
         if self.target_weight * len(self.symbols) > Decimal("1"):
             raise ConfigError(
                 f"{len(self.symbols)} symbols at {self.target_weight} each exceed the whole book"

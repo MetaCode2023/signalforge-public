@@ -103,3 +103,48 @@ def test_reconnect_catches_up_from_oldest_persisted_observation(tmp_path):
         ).fetchall()[0][0] == 5
     finally:
         persisted.close()
+
+
+def test_batched_tiingo_rotation_fetches_stalest_symbols_first(tmp_path, monkeypatch):
+    """Each run requests only the batch: never-fetched names first, priority first among ties."""
+    from signalforge.config import models
+
+    real = models.load_data_sources
+
+    def unpaced():
+        # The real policy spaces requests 2 s apart; pacing is tested in test_data_providers.
+        sources = real()
+        sources.providers["tiingo"] = sources.providers["tiingo"].model_copy(update={"rate_limit_per_minute": None})
+        return sources
+
+    monkeypatch.setattr(models, "load_data_sources", unpaced)
+    monkeypatch.setenv("TIINGO_API_KEY", "test-key")
+
+    class Prices(Response):
+        text = (Path(__file__).parent / "fixtures" / "tiingo_aapl_prices.json").read_text()
+
+    sessions = []
+
+    def factory():
+        sessions.append(Session(Prices()))
+        return sessions[-1]
+
+    when = datetime(2020, 10, 1, tzinfo=timezone.utc)
+    config = CollectorConfig(provider="tiingo", series_ids=(), symbols=("AAA", "BBB", "CCC"),
+                             priority_symbols=("CCC",), batch_size=2, requests_per_day=10)
+    db = tmp_path / "rotation.duckdb"
+    config, task = build_task(config, db, clock=lambda: when, session_factory=factory)
+
+    def requested(session):
+        return [url.split("/daily/")[1].split("/")[0] for url in session.urls]
+
+    task()
+    assert requested(sessions[0]) == ["CCC", "AAA"]
+    task()
+    assert requested(sessions[1]) == ["BBB", "CCC"]
+    warehouse = Warehouse(db)
+    try:
+        symbols = {row[0] for row in warehouse.con.execute("SELECT DISTINCT symbol FROM bars").fetchall()}
+    finally:
+        warehouse.close()
+    assert symbols == {"AAA", "BBB", "CCC"}

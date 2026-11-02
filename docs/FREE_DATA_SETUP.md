@@ -34,8 +34,8 @@ holds only five 2026 bars, are left out: a rotation picks the stalest symbols
 first, so a symbol that can never refresh would be fetched on every run.
 
 Each run fetches only `batch_size` (45) symbols: never-fetched first, then the
-oldest latest bar, with the 23 research names (`priority_symbols`) first among
-equally stale symbols. 45 stays under the 50-request hourly limit, the local
+oldest latest bar, with the 23 research names and the allocation book's ETFs
+(`priority_symbols`, 31 in all) first among equally stale symbols. 45 stays under the 50-request hourly limit, the local
 990/day budget under the 1,000 daily limit, and eleven runs reach all 481.
 
 `scripts/signalforge-daily.cmd` runs one batch, so the research names refresh

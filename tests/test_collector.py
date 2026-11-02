@@ -227,7 +227,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(free.max_attempts, 1)
         universe = load_config("config/collection-tiingo-universe.json")
         self.assertEqual((universe.provider, len(universe.symbols), universe.batch_size), ("tiingo", 481, 45))
-        self.assertEqual(set(universe.priority_symbols), set(free.symbols))
+        # The research names first, then the allocation book's ETFs (docs/DECISIONS.md 20).
+        self.assertTrue(set(free.symbols) <= set(universe.priority_symbols))
+        self.assertTrue({"EFA", "EEM", "IEF", "TLT", "LQD", "HYG", "GLD", "VNQ"} <= set(universe.priority_symbols))
         # One run stays under Tiingo's 50/hour and a full day under 1,000.
         self.assertLess(universe.request_cost, 50)
         self.assertLess(universe.requests_per_day, 1000)

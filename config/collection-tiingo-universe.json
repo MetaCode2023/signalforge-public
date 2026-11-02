@@ -46,7 +46,8 @@
   ],
   "priority_symbols": [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "JPM", "BAC", "WMT",
-    "COST", "XOM", "CVX", "UNH", "JNJ", "KO", "PG", "CAT", "SPY", "QQQ", "IWM"
+    "COST", "XOM", "CVX", "UNH", "JNJ", "KO", "PG", "CAT", "SPY", "QQQ", "IWM", "EFA",
+    "EEM", "IEF", "TLT", "LQD", "HYG", "GLD", "VNQ"
   ],
   "batch_size": 45,
   "interval_seconds": 3600,

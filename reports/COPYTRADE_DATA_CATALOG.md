@@ -38,6 +38,20 @@ data lives under gitignored folders (`data/raw/`, `data/copytrade/`,
 | `sec_tickers` | 10,423 | CIK to ticker to exchange | SEC company_tickers_exchange.json |
 | `sec_fails_to_deliver` (market_extras) | 23,690,686 | 2009-07 to 2026-10, 60,215 symbols | SEC fails-to-deliver data |
 | FINRA Reg SHO daily short volume (raw files) | downloading | 2009-08 to 2026-10 | FINRA public CDN |
+| `insider_open_market_trades` (insiders_full) | 4,366,366 | every Form 4 open-market buy (P) and sale (S), with owner role and 10b5-1 flag | derived |
+| `insider_cmp_class` (insiders_full, D1) | 137,669 insider-years | routine vs opportunistic, Cohen-Malloy-Pomorski 2012 rule, 2009 on | derived |
+| `insider_buy_clusters` (insiders_full, D1) | 68,784 | 2+ officers/directors buying one company on the same or consecutive trading days | derived |
+| `edgar_event_filings` (market_extras) | 2.78M | Form 144 pre-sale notices (268,971), proxy fights (DFAN14A 31,766, PREC14A 5,164), tender offers, 13F-NT, N-PX, 8-K | EDGAR full-index |
+| `sec_companies`, `sec_company_former_names` (market_extras) | 991,164 / 73,092 | every SEC entity: SIC industry, tickers, exchanges, former names | SEC bulk submissions.zip |
+| `sec_fundamentals_core` (market_extras) | 6,395,612 facts, 16,950 companies | shares outstanding, revenue, net income, assets, equity, cash, buybacks | SEC XBRL companyfacts.zip |
+
+## Cloudflare D1: `signalforge-copytrade` (company account)
+
+Compact, query-ready copies: `congress_trades`, `congress_members`,
+`house_paper_filings`, `insider_purchases`, `insider_cmp_class`,
+`insider_buy_clusters`, `guru_13f_holdings`, `guru_filings`,
+`activist_stakes`. About 150 MB. The full 13F and Form 3/4/5 tables stay
+local. A live dashboard over it: https://claude.ai/artifact/4vVo5uep9RWkyFgFDizomk
 
 ## Known gaps and caveats
 

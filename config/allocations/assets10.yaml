@@ -1,0 +1,22 @@
+# Multi-asset allocation book (docs/DECISIONS.md 19). Fixed before any result was seen.
+#
+# One or two ETFs per asset class, the longest-listed where there was a choice:
+#   US equity      SPY (1993), IWM (2000)
+#   Intl equity    EFA (2001), EEM (2003)
+#   Treasuries     IEF (2002), TLT (2002)
+#   Credit         LQD (2002), HYG (2007)
+#   Real assets    GLD (2004), VNQ (2004)
+# Sector funds are left out: they are slices of SPY, not another asset class.
+#
+# The rule is the textbook one: hold an ETF while its own 252-session return is
+# positive, cash otherwise, decided monthly. Nothing here was searched.
+#
+# No validation or test window lives here: those come from research.yaml splits.
+name: assets10
+source: tiingo
+symbols: [SPY, IWM, EFA, EEM, IEF, TLT, LQD, HYG, GLD, VNQ]
+load_start: 1992-01-02
+train_start: 1993-02-01
+lookback: 252
+target_weight: "0.10"                 # ten names, fully invested when every trend is up
+max_single_name_exposure: "0.10"      # replaces the 5% stock-book cap for this run only

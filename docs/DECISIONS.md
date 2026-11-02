@@ -520,3 +520,54 @@ honest one so the gap is visible.
 - **SEC data is public and its own source.** It is a new `filings` kind in
   `config/data_sources.yaml`. The downloader declares a contact User-Agent
   and pauses between files, per the SEC's fair-access policy.
+
+## 19. Allocation: one trend rule on ten asset classes, against the same ten held forever
+
+The stock work keeps finding no edge over buy-and-hold, which is what the
+literature predicts for signals mined from daily prices on large caps. The
+evidence that does hold up is time-series momentum across asset classes
+(Moskowitz, Ooi and Pedersen 2012; Hurst, Ooi and Pedersen's century study),
+and its value is in the crashes it sidesteps rather than in picking winners.
+`config/allocations/assets10.yaml` tests that idea with what the warehouse
+already has. Everything below was fixed before any result was seen.
+
+- **The rule is the textbook one.** Hold an ETF while its own total return
+  over the last 252 sessions is above zero, cash otherwise. No parameter was
+  searched, and the 12-month lookback is the published default, not a choice
+  made here. A second lookback, a vol-scaled weight or a short side would
+  each be a new look for the family-wise correction.
+- **Monthly, and only from what was known.** The decision is taken on the
+  first session of each month from the previous session's close, because a
+  session is only known to be the month's last once the next one has printed.
+  The state is recomputed from the view every bar and re-asserted between
+  decisions, so a crash in the middle of a month is not acted on until the
+  next month. A test changes later bars and checks the decision does not move.
+- **Ten ETFs, one or two per asset class.** SPY and IWM, EFA and EEM, IEF and
+  TLT, LQD and HYG, GLD and VNQ. Sector funds are left out because they are
+  slices of SPY. Where a class had a choice, the longest-listed fund was
+  taken. Most list between 2001 and 2004 and HYG in 2007, so the train window
+  (raised to 1993-02-01, SPY's start) is mostly SPY alone and validation,
+  2005 to 2014 including 2008, is the window that means something.
+- **The benchmark is the same ten, bought and never sold.** Beating SPY is
+  the wrong test for a diversified book; the question is whether the timing
+  adds anything over holding the same assets. A 100% SPY row is not possible
+  here anyway: the per-trade risk budget caps one entry near 25% of equity.
+- **One limit changes, for this run only.** The single-name cap is 10%
+  instead of 5%, because ten asset classes at 5% leave half the book in cash
+  and the result would measure the cash. `AllocationConfig.risk` replaces only
+  that field, caps it at 25%, and refuses weights that add to more than the
+  book. The per-trade risk budget, the drawdown and daily-loss breakers,
+  staleness and every order cap are unchanged. `risk.yaml`, the defaults and
+  the paper book are untouched, and a test fails if `signalforge/paper` or
+  `paper_cli` mention the allocation.
+- **The risk budget is left to bite.** It sizes an entry smaller when trailing
+  volatility is high, so a re-entry after a crash is smaller than 10%. That is
+  an existing control, kept, and it is stated on every row. The engine also
+  never trims, so a position drifts with its price between decisions instead
+  of being rebalanced to 10%.
+- **Both rows, as before.** Every run reports the rule as traded (the 10%
+  drawdown breaker, which never resets, will likely lock it out after 2008)
+  and strategy only (decision 15).
+- **The test window is refused.** `allocation_cli --run-holdout` exits without
+  running. Spending the one honest look on this book is a separate decision,
+  to be written here before it is made.

@@ -10,6 +10,7 @@ from signalforge.strategies.mean_reversion import ZScoreMeanReversion
 from signalforge.strategies.momentum import CrossSectionalMomentum
 from signalforge.strategies.regime import RegimeOverlay
 from signalforge.strategies.trend import MovingAverageTrend
+from signalforge.strategies.tsmom import TimeSeriesMomentum
 from signalforge.strategies.volatility import VolatilityTargetedTrend
 
 STRATEGIES: dict[str, type[BaseStrategy]] = {
@@ -19,6 +20,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
         CrossSectionalMomentum,
         ZScoreMeanReversion,
         VolatilityTargetedTrend,
+        TimeSeriesMomentum,
         BuyAndHold,
     )
 }

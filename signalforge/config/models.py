@@ -420,12 +420,96 @@ class UniverseConfig(_Frozen):
 
     def effective_splits(self, splits: SplitConfig) -> SplitConfig:
         """The research splits with train_start raised to this universe's."""
-        if not (splits.train_start <= self.train_start <= splits.train_end):
+        return _raise_train_start(splits, self.train_start)
+
+
+def _raise_train_start(splits: SplitConfig, train_start: date) -> SplitConfig:
+    if not (splits.train_start <= train_start <= splits.train_end):
+        raise ConfigError(
+            f"train_start {train_start} must fall inside the train window "
+            f"{splits.train_start}..{splits.train_end}"
+        )
+    return SplitConfig(**{**splits.model_dump(), "train_start": train_start})
+
+
+class AllocationConfig(_Frozen):
+    """A multi-asset allocation book: a few ETFs, one fixed weight each.
+
+    Like a universe file it carries no validation or test window and may only
+    raise `train_start`. `max_single_name_exposure` replaces the risk default
+    for this research run only: an allocation of N asset classes cannot be
+    expressed under a cap built for a 20-stock book. It may not exceed 25%,
+    and the weights may not add up to more than the whole book.
+    """
+
+    name: str
+    source: str
+    symbols: tuple[str, ...]
+    load_start: date
+    train_start: date
+    lookback: int
+    target_weight: Decimal
+    max_single_name_exposure: Decimal
+
+    @field_validator("name")
+    @classmethod
+    def _slug(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", value):
             raise ConfigError(
-                f"train_start {self.train_start} must fall inside the train window "
-                f"{splits.train_start}..{splits.train_end}"
+                f"allocation name must be a lowercase slug of at most 40 characters, got {value!r}"
             )
-        return SplitConfig(**{**splits.model_dump(), "train_start": self.train_start})
+        return value
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def _normalise_symbols(cls, value):
+        if not isinstance(value, (list, tuple)) or not value:
+            raise ConfigError("allocation symbols must be a non-empty list")
+        for item in value:
+            _require_text(item, "symbol")
+        symbols = [s.strip().upper() for s in value if s.strip()]
+        if len(set(symbols)) != len(symbols):
+            duplicates = sorted({s for s in symbols if symbols.count(s) > 1})
+            raise ConfigError(f"duplicate symbols in allocation: {duplicates}")
+        return tuple(symbols)
+
+    @field_validator("lookback")
+    @classmethod
+    def _positive_lookback(cls, value: int) -> int:
+        if value < 1:
+            raise ConfigError(f"lookback must be at least 1, got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _check_coherent(self) -> AllocationConfig:
+        if not (Decimal("0") < self.max_single_name_exposure <= Decimal("0.25")):
+            raise ConfigError(
+                f"max_single_name_exposure must be in (0, 0.25], got {self.max_single_name_exposure}"
+            )
+        if not (Decimal("0") < self.target_weight <= self.max_single_name_exposure):
+            raise ConfigError(
+                f"target_weight {self.target_weight} must be positive and within "
+                f"max_single_name_exposure {self.max_single_name_exposure}"
+            )
+        if self.target_weight * len(self.symbols) > Decimal("1"):
+            raise ConfigError(
+                f"{len(self.symbols)} symbols at {self.target_weight} each exceed the whole book"
+            )
+        if self.load_start > self.train_start:
+            raise ConfigError(
+                f"load_start {self.load_start} must not follow train_start {self.train_start}"
+            )
+        return self
+
+    def effective_splits(self, splits: SplitConfig) -> SplitConfig:
+        """The research splits with train_start raised to this allocation's."""
+        return _raise_train_start(splits, self.train_start)
+
+    def risk(self, risk: RiskConfig) -> RiskConfig:
+        """`risk` with only the single-name cap replaced. Research use only."""
+        return RiskConfig.model_validate(
+            {**risk.model_dump(), "max_single_name_exposure": self.max_single_name_exposure}
+        )
 
 
 class ProviderConfig(_Frozen):
@@ -528,6 +612,10 @@ def load_research(path: Path | None = None) -> ResearchConfig:
 
 def load_universe(path: Path) -> UniverseConfig:
     return _build(UniverseConfig, _read_yaml(path), path)
+
+
+def load_allocation(path: Path) -> AllocationConfig:
+    return _build(AllocationConfig, _read_yaml(path), path)
 
 
 def load_data_sources(path: Path | None = None) -> DataSourcesConfig:

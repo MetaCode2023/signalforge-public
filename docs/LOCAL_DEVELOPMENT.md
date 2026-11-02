@@ -132,6 +132,17 @@ looked at twice is a tuning set.
 
 Other options: `--db PATH`, `--out PATH`, `--series ID`, `--no-dashboard`.
 
+```bash
+python -m signalforge.allocation_cli
+```
+
+Researches the multi-asset allocation book in `config/allocations/assets10.yaml`
+(decision 19): ten asset-class ETFs held equally and never sold, against the
+same ten held only while each one's own 12-month return is positive. Train and
+validation only, both rows (as traded and strategy only), recorded in the
+registry. The allocation's 10% single-name cap applies to this run alone; it
+refuses `--run-holdout`. Options: `--db PATH`, `--allocation-file PATH`.
+
 ## 4. Run paper trading
 
 Nothing is approved for paper trading, so with no arguments it refuses:

@@ -45,3 +45,7 @@ data/forecast_trials/
 # Parsed SEC insider purchases and per-trade Assay detail (rebuildable).
 data/insiders/
 data/insider_trials/
+
+# Copy-trading research data (congress PTRs, 13F, gurus), rebuildable from public sources.
+data/congress/
+data/copytrade/

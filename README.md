@@ -177,7 +177,7 @@ results are a single-instrument proxy study.
 `python -m signalforge.dashboard` builds a Scoreboard tab, first in the tab strip: every strategy,
 forecaster and copy-trading rule tested so far, each against a bar measured on
 the same data, with the verdict worked out from the recorded numbers. Rules:
-[`docs/DECISIONS.md` §19](docs/DECISIONS.md).
+[`docs/DECISIONS.md` §21](docs/DECISIONS.md).
 
 ## Forecast trials
 

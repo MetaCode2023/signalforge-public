@@ -8,6 +8,7 @@ from pathlib import Path
 import duckdb
 
 from signalforge.config.models import load_all
+from signalforge.dashboard.allocation_page import write_allocation_page
 from signalforge.dashboard.assay_page import write_assay_page
 from signalforge.dashboard.forecast_page import ForecastPageData, write_forecast_page
 from signalforge.dashboard.render import open_readonly, write_dashboard
@@ -47,6 +48,9 @@ def main(argv=None) -> int:
     assay_tab = out.parent / "assay.html"
     if not assay_tab.exists():
         write_assay_page(assay_tab, None)
+    allocation_tab = out.parent / "allocation.html"
+    if not allocation_tab.exists():
+        write_allocation_page(allocation_tab, None)
     # Rebuilt every time: it is derived from the warehouse and the trial records.
     board = build_scoreboard(out.parent / "scoreboard.html", warehouse=warehouse,
                              reports_dir=args.reports_dir, notes=[note] if note else [])

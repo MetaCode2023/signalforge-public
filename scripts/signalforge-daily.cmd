@@ -8,12 +8,23 @@ set LOG=data\warehouse\daily.log
 
 echo ==== %DATE% %TIME% start>> %LOG%
 
+rem One batch of the full universe, research names first; signalforge-prices.cmd
+rem rotates through the rest hourly.
 echo -- pull Tiingo prices>> %LOG%
-%PY% -m signalforge.collector_cli --config config\collection-tiingo-free.json --cycles 1 >> %LOG% 2>&1
+%PY% -m signalforge.collector_cli --config config\collection-tiingo-universe.json --cycles 1 >> %LOG% 2>&1
 >> %LOG% echo exit %ERRORLEVEL%
 
 echo -- paper trade the universe book>> %LOG%
 %PY% -m signalforge.paper_cli --universe >> %LOG% 2>&1
+>> %LOG% echo exit %ERRORLEVEL%
+
+rem Refuses (logged, exit 3) until the book is approved and started with --start.
+echo -- paper trade the allocation book>> %LOG%
+%PY% -m signalforge.paper_cli --allocation >> %LOG% 2>&1
+>> %LOG% echo exit %ERRORLEVEL%
+
+echo -- write the Allocation tab>> %LOG%
+%PY% -m signalforge.allocation_cli --state >> %LOG% 2>&1
 >> %LOG% echo exit %ERRORLEVEL%
 
 echo -- send reports to the dashboard>> %LOG%

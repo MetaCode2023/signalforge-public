@@ -117,6 +117,17 @@ class TestClassic:
         assert verdicts(groups) == {"Trend": "AHEAD_THIN"}
         assert sb.tally(groups)["beat"] == 0
 
+    def test_the_allocation_book_gets_its_own_title(self):
+        board = registry(
+            experiment("buy_and_hold", "validation", "a", "0.70", description="ten ETFs, universe assets10",
+                       params={"symbols": ["SPY", "IWM", "EFA", "EEM", "IEF", "TLT", "LQD", "HYG", "GLD", "VNQ"]}),
+            experiment("tsmom", "validation", "a", "0.60", description="ten ETFs, universe assets10"),
+        )
+        (group,) = sb.classic_groups(board)
+        assert group.title == "Allocation, practice years"
+        assert group.bar == "bar = 0.70 Sharpe, buy and hold on the same data"
+        assert verdicts([group]) == {"Asset-class trend": "LOST"}
+
     def test_the_verdict_follows_the_benchmark(self):
         def verdict(bar):
             return verdicts(sb.classic_groups(registry(

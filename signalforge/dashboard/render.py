@@ -127,6 +127,7 @@ TAB_NAV = (
     ("index.html", "Operator"),
     ("forecast.html", "Crucible"),
     ("assay.html", "Assay"),
+    ("allocation.html", "Allocation"),
 )
 
 

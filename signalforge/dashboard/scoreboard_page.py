@@ -52,6 +52,7 @@ STRATEGIES = {
     "vol_targeted_trend": ("Volatility-sized trend", "The trend rule, sized to a 10% yearly swing"),
     "xs_momentum": ("Momentum", "Own what rose most over the last six months"),
     "zscore_mean_reversion": ("Mean reversion", "Buy after an unusually sharp drop, sell on the bounce"),
+    "tsmom": ("Asset-class trend", "Hold each fund only while its own 12-month return is above zero"),
 }
 FORECASTERS = {
     "random_walk": ("Coin-flip forecaster", "Random walk: no view on direction at all"),
@@ -293,8 +294,9 @@ def classic_groups(experiments: dict | None) -> list[Group]:
         span = "" if not start or not end else "".join((str(start)[:10], " to ", str(end)[:10], ". "))
         bar_text = "no buy-and-hold Sharpe was recorded" if bar is None else "".join(
             ("bar = ", _two(bar), " Sharpe, ", _held(_json(bench.get("parameters")))))
+        family_title = "Allocation," if any(r.get("strategy_name") == "tsmom" for r in rows) else "Classic strategies,"
         groups.append(Group(
-            "classic", " ".join(("Classic strategies,", WINDOW_TITLES[window])),
+            "classic", " ".join((family_title, WINDOW_TITLES[window])),
             "".join((span, str(bench.get("dataset_description") or ""))), bar_text,
             tuple(row for _, row in scored),
         ))

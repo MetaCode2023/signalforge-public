@@ -47,11 +47,17 @@ class CollectorConfig:
     max_retry_seconds: float = 300
     requests_per_day: int = 24
     lookback_days: int = 14
+    # Fetch only the `batch_size` stalest symbols per cycle, so a universe
+    # larger than the provider's hourly limit is covered by rotation rather
+    # than by one oversized pull. `priority_symbols` go first among equally
+    # stale symbols (the research book refreshes before the long tail).
+    batch_size: int | None = None
+    priority_symbols: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.provider not in {"fred", "local_archive", "tiingo", "alphavantage"}:
             raise ValueError("unsupported collector provider")
-        for name in ("series_ids", "symbols", "datasets"):
+        for name in ("series_ids", "symbols", "datasets", "priority_symbols"):
             values = getattr(self, name)
             if not isinstance(values, (tuple, list)) or any(
                 not isinstance(v, str) or not v.strip() for v in values
@@ -60,6 +66,13 @@ class CollectorConfig:
             object.__setattr__(self, name, tuple(values))
         if set(self.series_ids) & set(self.symbols):
             raise ValueError("series_ids and symbols must be distinct")
+        if not set(self.priority_symbols) <= set(self.symbols):
+            raise ValueError("priority_symbols must all be listed in symbols")
+        if self.batch_size is not None:
+            if type(self.batch_size) is not int or self.batch_size < 1:
+                raise ValueError("batch_size must be a positive integer or null")
+            if not self.symbols:
+                raise ValueError("batch_size rotates symbols; it requires symbols")
         for name in ("interval_seconds", "retry_seconds", "max_retry_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
@@ -108,7 +121,28 @@ class CollectorConfig:
     def request_cost(self) -> int:
         if self.provider == "local_archive":
             return 0
-        return len(self.symbols) if self.symbols else 1
+        if not self.symbols:
+            return 1
+        return min(self.batch_size or len(self.symbols), len(self.symbols))
+
+
+def select_batch(config: CollectorConfig, latest: dict[str, date | None]) -> tuple[str, ...]:
+    """The symbols one cycle fetches: all of them, or the stalest `batch_size`.
+
+    Never-fetched symbols come first, then the oldest latest bar. Among equally
+    stale symbols the priority ones go first, then configuration order, so the
+    choice is deterministic and a full rotation reaches every symbol.
+    """
+    if config.batch_size is None or config.batch_size >= len(config.symbols):
+        return config.symbols
+    priority = set(config.priority_symbols)
+    order = {symbol: i for i, symbol in enumerate(config.symbols)}
+
+    def key(symbol):
+        day = latest.get(symbol)
+        return (day is not None, day or date.min, symbol not in priority, order[symbol])
+
+    return tuple(sorted(config.symbols, key=key)[: config.batch_size])
 
 
 @dataclass(frozen=True)

@@ -217,11 +217,143 @@ def _payload_data_health(p, problems):
     _check(problems, isinstance(p.get("stale"), bool), "payload.stale must be a bool")
 
 
+# forecast_trial: Crucible. Scores and a forward cone in fractional returns only.
+# No price level is part of this payload, so licensed bars never leave the machine.
+_BUCKET_LABEL = re.compile(r"^\d{1,3}-\d{1,3}$")
+_FORECASTER_REQ = (
+    "id", "n", "n_independent", "coverage", "coverage_lo", "coverage_hi", "mean_crps", "hit_rate",
+    "hit_lo", "hit_hi", "base_rate_up", "trending_share", "trending_n", "pit", "agreement",
+)
+_FORECASTER_OPT = ("trending_hit", "choppy_n", "choppy_hit", "crps_skill")
+_CONE_KEYS = ("symbol", "as_of", "forecaster", "horizon", "p10", "p50", "p90", "paths", "paths_up",
+              "n_paths", "regime", "direction")
+_BACKTEST_REQ = ("rule_id", "period_start", "period_end", "hold_final", "rule_final", "hold_equity",
+                 "rule_equity")
+
+
+def _frac(value) -> bool:
+    return _num(value) and 0 <= value <= 1
+
+
+def _ret(value) -> bool:
+    return _num(value) and -1 <= value <= 10
+
+
+def _nonneg(value) -> bool:
+    return _num(value) and 0 <= value < 1e12
+
+
+def _list(value, lo, hi, pred) -> bool:
+    return isinstance(value, list) and lo <= len(value) <= hi and all(pred(v) for v in value)
+
+
+def _forecaster(f, i, problems):
+    where = f"payload.forecasters[{i}]"
+    if not isinstance(f, dict):
+        problems.append(f"{where} must be an object")
+        return
+    _keys(f, _FORECASTER_REQ, _FORECASTER_OPT, problems, where)
+    _check(problems, _slug(f.get("id")), f"{where}.id must be a slug")
+    for k in ("n", "n_independent", "trending_n"):
+        _check(problems, _int(f.get(k)) and f[k] >= 0, f"{where}.{k} must be an int >= 0")
+    for k in ("coverage", "coverage_lo", "coverage_hi", "hit_rate", "hit_lo", "hit_hi", "base_rate_up",
+              "trending_share"):
+        _check(problems, _frac(f.get(k)), f"{where}.{k} must be 0..1")
+    _check(problems, _nonneg(f.get("mean_crps")) and f["mean_crps"] < 10, f"{where}.mean_crps out of range")
+    for k in ("trending_hit", "choppy_hit"):
+        if k in f:
+            _check(problems, _frac(f[k]), f"{where}.{k} must be 0..1")
+    if "choppy_n" in f:
+        _check(problems, _int(f["choppy_n"]) and f["choppy_n"] >= 0, f"{where}.choppy_n must be an int >= 0")
+    if "crps_skill" in f:
+        _check(problems, _num(f["crps_skill"]) and abs(f["crps_skill"]) <= 10, f"{where}.crps_skill out of range")
+    _check(problems, _list(f.get("pit"), 10, 10, _frac), f"{where}.pit must be ten fractions")
+    buckets = f.get("agreement")
+    if _list(buckets, 0, 6, lambda b: isinstance(b, dict)):
+        for j, b in enumerate(buckets):
+            bw = f"{where}.agreement[{j}]"
+            _keys(b, ("label", "n"), ("hit_rate", "lo", "hi"), problems, bw)
+            _check(problems, isinstance(b.get("label"), str) and bool(_BUCKET_LABEL.match(b["label"])),
+                   f"{bw}.label invalid")
+            _check(problems, _int(b.get("n")) and b["n"] >= 0, f"{bw}.n must be an int >= 0")
+            for k in ("hit_rate", "lo", "hi"):
+                if k in b:
+                    _check(problems, _frac(b[k]), f"{bw}.{k} must be 0..1")
+    else:
+        problems.append(f"{where}.agreement must be a list of up to 6 objects")
+    if all(_frac(f.get(k)) for k in ("coverage_lo", "coverage_hi", "hit_lo", "hit_hi")):
+        _check(problems, f["coverage_lo"] <= f["coverage_hi"] and f["hit_lo"] <= f["hit_hi"],
+               f"{where} interval is inverted")
+
+
+def _payload_forecast_trial(p, problems):
+    _keys(p, ("trial_id", "commit_sha", "window_start", "window_end", "symbols", "horizon", "n_paths",
+              "trend_agreement", "forecasters"), ("cone", "backtest"), problems)
+    _check(problems, _slug(p.get("trial_id")), "payload.trial_id must be a slug")
+    _check(problems, isinstance(p.get("commit_sha"), str) and bool(_SHA.match(p["commit_sha"])),
+           "payload.commit_sha must be 7-40 lowercase hex")
+    start, end = _iso(p.get("window_start")), _iso(p.get("window_end"))
+    _check(problems, start is not None and end is not None and start < end,
+           "payload.window_start/window_end must be ISO with start < end")
+    symbols = p.get("symbols")
+    _check(problems, _list(symbols, 1, 50, lambda s: isinstance(s, str) and bool(_SYMBOL.match(s)))
+           and len(set(symbols)) == len(symbols), "payload.symbols must be 1-50 unique tickers")
+    h = p.get("horizon")
+    _check(problems, _int(h) and 1 <= h <= 252, "payload.horizon must be 1..252")
+    _check(problems, _int(p.get("n_paths")) and 2 <= p["n_paths"] <= 10000, "payload.n_paths must be 2..10000")
+    ta = p.get("trend_agreement")
+    _check(problems, _num(ta) and 0.5 < ta <= 1, "payload.trend_agreement must be in (0.5, 1]")
+    forecasters = p.get("forecasters")
+    if _list(forecasters, 1, 5, lambda f: True):
+        for i, f in enumerate(forecasters):
+            _forecaster(f, i, problems)
+    else:
+        problems.append("payload.forecasters must list 1-5 forecasters")
+    if "cone" in p:
+        c = p["cone"]
+        if not isinstance(c, dict):
+            problems.append("payload.cone must be an object")
+        else:
+            _keys(c, _CONE_KEYS, (), problems, "payload.cone")
+            ch = c.get("horizon")
+            _check(problems, isinstance(c.get("symbol"), str) and bool(_SYMBOL.match(c["symbol"])),
+                   "payload.cone.symbol must be a ticker")
+            _check(problems, _iso(c.get("as_of")) is not None, "payload.cone.as_of must be ISO")
+            _check(problems, _slug(c.get("forecaster")), "payload.cone.forecaster must be a slug")
+            _check(problems, _int(ch) and 1 <= ch <= 252, "payload.cone.horizon must be 1..252")
+            n = ch if _int(ch) else -1
+            for k in ("p10", "p50", "p90"):
+                _check(problems, _list(c.get(k), n, n, _ret), f"payload.cone.{k} must be {n} returns")
+            _check(problems, _list(c.get("paths"), 0, 60, lambda row: _list(row, n, n, _ret)),
+                   "payload.cone.paths must be up to 60 rows of horizon returns")
+            _check(problems, _int(c.get("n_paths")) and _int(c.get("paths_up")) and 0 <= c["paths_up"] <= c["n_paths"],
+                   "payload.cone.paths_up must be 0..n_paths")
+            _check(problems, c.get("regime") in ("TRENDING", "CHOPPY"), "payload.cone.regime invalid")
+            _check(problems, c.get("direction") in ("UP", "DOWN"), "payload.cone.direction invalid")
+    if "backtest" in p:
+        b = p["backtest"]
+        if not isinstance(b, dict):
+            problems.append("payload.backtest must be an object")
+        else:
+            _keys(b, _BACKTEST_REQ, ("hold_sharpe", "rule_sharpe"), problems, "payload.backtest")
+            _check(problems, _slug(b.get("rule_id")), "payload.backtest.rule_id must be a slug")
+            bs, be = _iso(b.get("period_start")), _iso(b.get("period_end"))
+            _check(problems, bs is not None and be is not None and bs < be, "payload.backtest period invalid")
+            for k in ("hold_final", "rule_final"):
+                _check(problems, _nonneg(b.get(k)), f"payload.backtest.{k} must be >= 0")
+            for k in ("hold_sharpe", "rule_sharpe"):
+                if k in b:
+                    _check(problems, _num(b[k]) and abs(b[k]) < 1e12, f"payload.backtest.{k} must be a number")
+            for k in ("hold_equity", "rule_equity"):
+                _check(problems, _list(b.get(k), 2, 200, _nonneg), f"payload.backtest.{k} must be 2-200 values")
+
+
 _PAYLOADS = {
     "heartbeat": _payload_heartbeat,
     "paper_session": _payload_paper_session,
     "backtest": _payload_backtest,
     "data_health": _payload_data_health,
+    "forecast_trial": _payload_forecast_trial,
 }
 
 
@@ -296,6 +428,74 @@ def _envelope(event_type, run_id, now, payload, key):
         "schema_version": 1, "paper_only": True, "event_id": event_id_for(event_type, key),
         "event_type": event_type, "run_id": run_id, "occurred_at": _stamp(now), "payload": payload,
     }
+
+
+
+def forecast_trial_run_id(now: datetime) -> str:
+    return f"crucible-{now:%Y%m%d}"
+
+
+def _r(value, digits=4):
+    return round(float(value), digits)
+
+
+def _summary_payload(fid: str, s: dict, skill: float | None) -> dict:
+    regime = {b["label"]: b for b in s["by_regime"]}
+    trending, choppy = regime.get("TRENDING", {}), regime.get("CHOPPY", {})
+    out = {
+        "id": slugify(fid), "n": int(s["n"]), "n_independent": int(s["n_independent"]),
+        "coverage": _r(s["coverage"]), "coverage_lo": _r(s["coverage_interval"][0]),
+        "coverage_hi": _r(s["coverage_interval"][1]), "mean_crps": _r(s["mean_crps"], 6),
+        "hit_rate": _r(s["hit_rate"]), "hit_lo": _r(s["hit_interval"][0]), "hit_hi": _r(s["hit_interval"][1]),
+        "base_rate_up": _r(s["base_rate_up"]), "trending_share": _r(s["trending_share"]),
+        "trending_n": int(trending.get("n", 0)), "pit": [_r(v) for v in s["pit_histogram"]],
+        "agreement": [],
+    }
+    if trending.get("hit_rate") is not None:
+        out["trending_hit"] = _r(trending["hit_rate"])
+    if choppy:
+        out["choppy_n"] = int(choppy.get("n", 0))
+        if choppy.get("hit_rate") is not None:
+            out["choppy_hit"] = _r(choppy["hit_rate"])
+    if skill is not None:
+        out["crps_skill"] = _r(skill, 6)
+    for b in s["by_agreement"]:
+        lo, hi = (int(x) for x in re.findall(r"\d+", b["label"])[:2])
+        bucket = {"label": f"{lo}-{min(hi, 100)}", "n": int(b["n"])}
+        if b.get("hit_rate") is not None:
+            bucket["hit_rate"] = _r(b["hit_rate"])
+        if b.get("interval") and b["interval"][0] is not None:
+            bucket["lo"], bucket["hi"] = _r(b["interval"][0]), _r(b["interval"][1])
+        out["agreement"].append(bucket)
+    return out
+
+
+def build_forecast_trial(record: dict, now: datetime, *, commit_sha: str, symbols, window,
+                         horizon: int, n_paths: int, trend_agreement: float,
+                         cone: dict | None = None, backtest: dict | None = None) -> dict:
+    """The Crucible report: trial scores plus an optional forward cone and engine run.
+
+    `cone` is already in fractional returns from the forecast origin (see
+    `cone_payload`); `backtest` holds simulated equity. Neither carries a price.
+    """
+    skills = next((v for k, v in record.items() if k.startswith("crps_skill")), {})
+    stamp = now.astimezone(timezone.utc)
+    trial_id = f"crucible-{stamp:%Y%m%dt%H%M%S}"
+    payload = {
+        "trial_id": trial_id, "commit_sha": commit_sha,
+        "window_start": f"{window[0]}T00:00:00Z", "window_end": f"{window[1]}T00:00:00Z",
+        "symbols": list(symbols), "horizon": int(horizon), "n_paths": int(n_paths),
+        "trend_agreement": float(trend_agreement),
+        "forecasters": [
+            _summary_payload(f["forecaster"], f["summary"], skills.get(f["forecaster"]))
+            for f in record["forecasters"]
+        ],
+    }
+    if cone is not None:
+        payload["cone"] = cone
+    if backtest is not None:
+        payload["backtest"] = backtest
+    return _envelope("forecast_trial", forecast_trial_run_id(now), now, payload, trial_id)
 
 
 def build_heartbeat(now, run_id, active_strategies=()):

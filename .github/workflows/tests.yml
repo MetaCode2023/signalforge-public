@@ -20,15 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # backups/ and history/ hold a ~130 MB private workspace archive
-          # that no test reads.
+          # Everything except backups/ and history/, which hold a ~130 MB
+          # private workspace archive that no test reads. Excluding beats
+          # listing: a new top-level folder that tests read is picked up.
           sparse-checkout: |
-            signalforge
-            tests
-            config
-            scripts
-            docs
-          sparse-checkout-cone-mode: true
+            /*
+            !/backups/
+            !/history/
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

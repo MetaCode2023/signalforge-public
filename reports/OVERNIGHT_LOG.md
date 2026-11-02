@@ -32,8 +32,10 @@ Machine: operator's main PC (4 cores, CPU only). Repo `.venv` Python 3.12.
 1. **Holdout.** Not spent. The draft recommends against spending it on the
    unconditional rule, and notes there is no insider holdout path yet
    (`research_cli --run-holdout` covers price strategies only).
-2. **Window for 2015+.** The research splits end before these years. The
-   new data needs a registered split before any trial reads it.
+2. **2015+ is the holdout.** Correction: the registered test window is
+   2015-01-01 to 2026-10-23, so this data belongs to the holdout. Only
+   filings were counted; no holdout prices or returns were read. It includes
+   the 2020 and 2022 drawdowns, so a pre-registered crash rule is testable.
 3. **Price coverage.** The 493-symbol warehouse is the binding limit (under 5%
    of purchases scored). Adding more Tiingo symbols, ideally including
    delisted ones, would do more for Assay than any filter.

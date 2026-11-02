@@ -80,18 +80,25 @@ What the table says:
 
 ## Should the holdout be spent on "Every insider buy"?
 
-Recommendation: **not yet.** The validation result is a 2008 to 2009 effect.
-The test window follows 2014, a period with no comparable crash for most of
-it, so the likely outcome is a clean "no edge", and the one-time holdout is
-gone. Two cheaper steps first:
+Recommendation: **not on the unconditional rule.** The test window in
+`config/research.yaml` is 2015-01-01 to 2026-10-23, so the 2015 to 2026 SEC
+quarters downloaded overnight are the holdout's own data. (Only filings were
+counted; no holdout prices or returns were read.) The window holds two real
+drawdowns, March 2020 and 2022, so a crash-conditional rule can be tested on
+it, though with few events.
 
-1. **Widen coverage.** Add the 2015 to 2026 SEC quarters (downloaded overnight,
-   see `OVERNIGHT_LOG.md`) and get prices for more of the matched companies.
-   More of the purchases scored is worth more than any filter.
-2. **Pre-register a regime rule, then test it once.** If the hypothesis is
-   "copy insiders after a market drawdown of X%", write X down before looking,
-   register it, and spend the holdout on that rule, not on the unconditional
-   one.
+1. **Pre-register a regime rule before anything reads the holdout.** The
+   validation evidence says "insider buys pay after a crash". Write the rule
+   down from convention, not from tuning on validation: for example, copy
+   only purchases filed while SPY closes 20% or more below its prior 252-day
+   high (the usual bear-market line). Fix the horizon (21 sessions), the
+   costs and the coins as they are now. Register it, then spend the holdout
+   once on it and the unconditional rule side by side.
+2. **Widen price coverage first if possible.** The warehouse holds 493
+   symbols, so under 5% of holdout purchases can be scored (4,694 officer or
+   director buys at 416 companies). Crash-period events will be a few hundred
+   at most. More symbols, ideally including delisted companies, make the one
+   shot worth more.
 
 There is no command for it yet. `research_cli --run-holdout` spends the test
 window for the price strategies only; it has no insider path, and

@@ -48,3 +48,12 @@ Machine: operator's main PC (4 cores, CPU only). Repo `.venv` Python 3.12.
 ## Test suite
 
 - Full pytest run in `.venv` on 2026-11-01: exit 0, no failures or errors (run alongside Kronos, so slow).
+
+## 2026-11-02 about 1:10am: low-memory stop (Claude Code)
+
+Claude Code stopped four background jobs because the PC ran low on memory (likely the FINRA loader holding 200 daily files at once). Per its rule they were NOT restarted automatically:
+
+- **Kronos SPY trial**: ran 22:01 to about 01:10 (about 3 of 19.5 hours). It keeps no checkpoint, so a restart begins from zero. Restart command unchanged (see top of this file).
+- **13D header reads (all filers)**: 21,342 headers saved and resumable (`get_13d_headers.py initial13d`). First-time 13Ds are complete for 2021 to Oct 2026; 2020 partial; 1994 to 2019 not yet (except the 17 tracked managers, complete).
+- **FINRA short volume load**: all 2009-08 to 2026-10 daily files are downloaded (data/raw/finra_regsho); the database load needs a lower-memory rewrite before it runs again.
+- A wake-up timer.

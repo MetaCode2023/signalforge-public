@@ -494,3 +494,38 @@ class TestCoverageNotes:
     def test_a_universe_name_absent_from_the_warehouse_is_named(self):
         notes = coverage_notes(self.history(), splits(), "SPY", universe=("AAA", "GHOST"))
         assert "GHOST" in next(n for n in notes if "TRAIN" in n)
+
+
+class TestOhlcvHistoryBounds:
+    def test_ohlcv_history_bounds_load_window(self, warehouse):
+        seed_universe(warehouse)
+        bundle = ohlcv_history(
+            warehouse, ["AAA", "SPY"], sources=["fixture"],
+            price_basis="adjusted", start=DAYS[100], end=DAYS[300],
+        )
+        days = bundle.history.trading_days
+        assert days[0] == DAYS[100]
+        assert days[-1] == DAYS[300]
+        assert len(days) == 201
+        assert "2018-" in bundle.description and DAYS[300].isoformat() in bundle.description
+
+    def test_ohlcv_history_unbounded_output_unchanged(self, warehouse):
+        seed_universe(warehouse)
+        plain = ohlcv_history(warehouse, ["AAA", "BBB", "SPY"], sources=["fixture"])
+        wide = ohlcv_history(
+            warehouse, ["AAA", "BBB", "SPY"], sources=["fixture"],
+            start=DAYS[0], end=DAYS[-1],
+        )
+        assert plain.description == wide.description
+        assert plain.limitations == wide.limitations
+        assert plain.history.all_bars() == wide.history.all_bars()
+        assert plain.history.trading_days == DAYS_TUPLE
+
+    def test_ohlcv_history_gap_check_still_refuses_a_year_hole(self, warehouse):
+        bars = [b for b in trending("AAA", "0.1") if not (DAYS[100] < b.trade_date < DAYS[500])]
+        warehouse.upsert_bars(bars)
+        with pytest.raises(ValidationError, match="gap"):
+            ohlcv_history(warehouse, ["AAA"], sources=["fixture"])
+
+
+DAYS_TUPLE = tuple(DAYS)

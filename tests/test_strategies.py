@@ -211,6 +211,65 @@ def test_trend_ignores_symbols_without_bars_yet():
     assert {s.symbol for s in sigs} == {"A"}
 
 
+def _ramps(slopes: dict[str, str], n: int = 60) -> PriceHistory:
+    days = business_days(date(2020, 1, 1), n)
+    return PriceHistory.from_bars(
+        [make_bar(sym, d, D(100) + D(slope) * i) for sym, slope in slopes.items() for i, d in enumerate(days)]
+    )
+
+
+def _last_day_signals(strategy, history) -> dict[str, Signal]:
+    d = history.trading_days[-1]
+    return {s.symbol: s for s in strategy.generate_signals(d, history.view(d))}
+
+
+def test_ma_trend_without_max_names_parameters_unchanged(uptrend_history):
+    s = MovingAverageTrend(10, 30, D("0.5"), ("UP",))
+    assert set(s.parameters()) == {"fast_window", "slow_window", "target_weight", "symbols"}
+    capped_off = MovingAverageTrend(10, 30, D("0.5"), ("UP",), max_names=None)
+    assert run_all(capped_off, uptrend_history) == run_all(s, uptrend_history)
+    h = multi_history()
+    assert run_all(MovingAverageTrend(10, 30, D("0.5"), ("A", "B", "C")), h) == run_all(
+        MovingAverageTrend(10, 30, D("0.5"), ("A", "B", "C"), max_names=None), h
+    )
+
+
+def test_ma_trend_max_names_enters_top_n_by_strength():
+    h = _ramps({"S1": "0.1", "S2": "0.3", "S3": "0.2", "S4": "0.05"})
+    sigs = _last_day_signals(MovingAverageTrend(10, 30, D("0.5"), tuple(h.symbols), max_names=2), h)
+    assert {k for k, v in sigs.items() if v.direction is ENTER} == {"S2", "S3"}
+    for sym in ("S1", "S4"):
+        assert sigs[sym].direction is EXIT
+        assert "outside top 2" in sigs[sym].reason
+    assert sigs["S2"].target_weight == D("0.5") and sigs["S1"].target_weight == 0
+
+
+def test_ma_trend_max_names_ties_break_by_symbol():
+    h = _ramps({"B": "0.2", "A": "0.2", "C": "0.2"})
+    sigs = _last_day_signals(MovingAverageTrend(10, 30, D("0.5"), ("A", "B", "C"), max_names=2), h)
+    assert {k for k, v in sigs.items() if v.direction is ENTER} == {"A", "B"}
+    assert sigs["C"].direction is EXIT
+
+
+def test_ma_trend_max_names_non_trending_symbol_exits_normally():
+    h = _ramps({"UP": "0.3", "DN": "-0.3"})
+    sigs = _last_day_signals(MovingAverageTrend(10, 30, D("0.5"), ("UP", "DN"), max_names=5), h)
+    assert sigs["UP"].direction is ENTER
+    assert sigs["DN"].direction is EXIT and "outside top" not in sigs["DN"].reason
+
+
+def test_ma_trend_max_names_parameter_is_reported_and_reconstructible():
+    s = MovingAverageTrend(10, 30, D("0.5"), ("A",), max_names=3)
+    assert s.parameters()["max_names"] == 3
+    assert type(s)(**s.parameters()).parameters() == s.parameters()
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 2.5, "3"])
+def test_ma_trend_max_names_must_be_positive_int(bad):
+    with pytest.raises(ValidationError):
+        MovingAverageTrend(10, 30, D("0.5"), ("A",), max_names=bad)
+
+
 # --- momentum ------------------------------------------------------------
 
 def test_momentum_fixture_behaviour(uptrend_history, downtrend_history, flat_history):
@@ -420,3 +479,57 @@ def test_registry_unknown_id_and_unknown_param_raise_validation_error():
         build("nope")
     with pytest.raises(ValidationError):
         build("ma_trend", fast_window=5, slow_window=20, target_weight=D("0.4"), symbols=["A"], bogus=1)
+
+
+# --- registry wrappers ---------------------------------------------------
+
+def test_build_wraps_eligibility_then_overlay():
+    from signalforge.strategies.eligibility import EligibilityFilter
+    from signalforge.strategies.regime import RegimeOverlay, RiskOffGate
+
+    gate = RiskOffGate("vix30", "VIXCLS", ">", D("30"), 1, ())
+    built = build(
+        "ma_trend",
+        fast_window=10, slow_window=30, target_weight=D("0.05"), symbols=("A", "B"),
+        max_names=1,
+        eligibility={"min_history_sessions": 252, "min_median_dollar_volume": D("500000"),
+                     "dollar_volume_window": 63,
+                     "max_stale_days": 5},
+        riskoff_gate=gate,
+    )
+    assert isinstance(built, RegimeOverlay)
+    assert isinstance(built.inner, EligibilityFilter)
+    assert isinstance(built.inner.inner, MovingAverageTrend)
+    assert built.inner.candidates == frozenset({"A", "B"})
+    assert built.strategy_id == "ma_trend_riskoff_vix30"
+    assert built.parameters()["elig_min_history_sessions"] == 252
+    assert built.parameters()["max_names"] == 1
+
+
+def test_build_without_wrappers_returns_plain_class():
+    built = build("ma_trend", fast_window=10, slow_window=30, target_weight=D("0.05"), symbols=("A",))
+    assert type(built) is MovingAverageTrend
+
+
+def test_build_eligibility_only_returns_the_filter():
+    from signalforge.strategies.eligibility import EligibilityFilter
+
+    built = build(
+        "xs_momentum", lookback_days=60, skip_days=5, top_n=1, target_weight_total=D("0.6"),
+        min_history_days=70, symbols=("A", "B"),
+        eligibility={"min_history_sessions": 252, "min_median_dollar_volume": D("500000"),
+                     "dollar_volume_window": 63,
+                     "max_stale_days": 5},
+    )
+    assert isinstance(built, EligibilityFilter) and built.strategy_id == "xs_momentum"
+
+
+def test_build_eligibility_needs_symbols():
+    with pytest.raises(ValidationError):
+        build(
+            "xs_momentum", lookback_days=60, skip_days=5, top_n=1, target_weight_total=D("0.6"),
+            min_history_days=70,
+            eligibility={"min_history_sessions": 252, "min_median_dollar_volume": D("500000"),
+                         "dollar_volume_window": 63,
+                     "max_stale_days": 5},
+        )

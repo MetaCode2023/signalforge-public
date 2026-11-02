@@ -6,12 +6,13 @@ single most important ones in the project: if they pass, no strategy can see
 the future by accident, regardless of how it is written.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
-from signalforge.core.errors import LookAheadError
+from signalforge.core.errors import LookAheadError, ValidationError
 from signalforge.core.history import PriceHistory, PointInTimeView
 from signalforge.core.types import Bar
 
@@ -160,3 +161,65 @@ class TestNextTradingDay:
         bars = [mk_bar(1, "100"), mk_bar(6, "106")]
         h = PriceHistory.from_bars(bars)
         assert h.next_trading_day(date(2020, 1, 3)) == date(2020, 1, 6)
+
+
+class TestAccessorsMatchFullSliceSemantics:
+    """The bisect-based accessors must equal a naive full-slice reference."""
+
+    @staticmethod
+    def _reference(history, symbol, as_of):
+        return tuple(b for b in history.bars_for(symbol) if b.trade_date <= as_of)
+
+    @settings(max_examples=60, deadline=None)
+    @given(
+        starts=st.lists(st.integers(1, 20), min_size=1, max_size=4),
+        lengths=st.lists(st.integers(1, 15), min_size=1, max_size=4),
+        as_of_offset=st.integers(0, 40),
+        lookback=st.integers(1, 25),
+    )
+    def test_view_accessors_match_full_slice_semantics(
+        self, starts, lengths, as_of_offset, lookback
+    ):
+        base = date(2020, 1, 1)
+        bars = []
+        for index, (start, length) in enumerate(zip(starts, lengths)):
+            for i in range(length):
+                c = D(50 + index * 10 + i)
+                bars.append(
+                    Bar(
+                        symbol=f"S{index}",
+                        trade_date=base + timedelta(days=start + i),
+                        open=c, high=c, low=c, close=c, volume=1000,
+                        adj_close=c + D("0.5"), source="fixture",
+                    )
+                )
+        history = PriceHistory.from_bars(bars)
+        as_of = base + timedelta(days=as_of_offset)
+        view = history.view(as_of)
+        seen = []
+        for symbol in history.symbols:
+            ref = self._reference(history, symbol, as_of)
+            assert view.bars(symbol) == ref
+            assert view.bars(symbol, lookback) == ref[-lookback:]
+            assert view.closes(symbol, lookback) == tuple(b.close for b in ref[-lookback:])
+            assert view.adjusted_closes(symbol, lookback) == tuple(
+                b.adj_close for b in ref[-lookback:]
+            )
+            prices = tuple(b.adj_close for b in ref[-(lookback + 1):])
+            assert view.returns(symbol, lookback) == tuple(
+                prices[i] / prices[i - 1] - 1 for i in range(1, len(prices))
+            )
+            assert view.latest(symbol) == (ref[-1] if ref else None)
+            for required in (0, 1, len(ref), len(ref) + 1):
+                assert view.has_history(symbol, required) is (len(ref) >= required)
+            if ref:
+                seen.append(symbol)
+        assert view.cross_section() == tuple(seen)
+        assert view.marks() == {s: self._reference(history, s, as_of)[-1].close for s in seen}
+
+    def test_bars_lookback_zero_still_raises(self, history):
+        view = history.view(date(2020, 1, 5))
+        with pytest.raises(ValidationError):
+            view.bars("TEST", 0)
+        with pytest.raises(ValidationError):
+            view.bars("TEST", -1)

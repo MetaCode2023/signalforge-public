@@ -313,3 +313,210 @@ The registry exists to make the count of variants tried visible, and
 `family_wise_summary` exists because the per-strategy view answered the wrong
 question: the denominator for "did any of the things I tried beat the
 benchmark" is the number of things tried.
+
+## 13. The risk-off overlay: two gates, flatten to zero, no tuning
+
+Two overlays exist, both decided before any result was seen and neither tuned
+on the validation window. `vix30` is risk-off when VIXCLS is above 30, read
+with a 1 session publication lag. `curve0` is risk-off when T10Y2Y is below 0
+(an inverted curve), read with a 2 session lag. Each wraps `ma_trend` and
+`xs_momentum`, giving four overlay strategies in all, named
+`<strategy>_riskoff_<gate>`.
+
+Both thresholds are folk conventions that were known with hindsight: "VIX 30
+is fear" and "an inverted curve precedes recession" are the numbers everyone
+quotes after the fact. Choosing them in advance does not make them free of
+that, so a good overlay result is weaker evidence than the same result from a
+threshold derived from data that predates it. Nothing here was searched; if a
+third gate or a different threshold is ever tried, it counts as a new look and
+the family-wise correction has to see it.
+
+The engine only enters and exits, it never trims, so risk-off means flatten:
+every ENTER_LONG becomes an EXIT_LONG while the gate is on. Re-entry happens on
+the first risk-on session. Exits are never blocked by a breaker, so the
+flatten always goes through.
+
+The gate reads an observation published strictly before the session being
+decided: the reference session is `lag_sessions` trading days back, and the
+value used is the last non-null observation dated at or before it. An
+observation older than 10 calendar days, or none at all, is "unknown" and is
+treated as risk-on, with the count of unknown sessions reported beside the
+risk-off and risk-on counts for every window. Duplicate observation dates are
+refused. The series are the latest published values, not ALFRED vintages, so a
+later revision is used as if it had always been known. That is a residual
+look-ahead and is stated in every run's limitations.
+
+## 14. The broad universe: breadth, eligibility, and what was left out
+
+`config/universes/broad.yaml` lists every symbol with tiingo bars in the
+warehouse (466 after removing the benchmark and the excluded names). It is a
+separate file passed with `--universe-file`, not a key in `research.yaml`,
+because `ResearchConfig` forbids unknown keys and the paper book reads
+`research.universe`; the paper book is untouched. The file carries no
+validation or test window. Validation and test come from the existing splits,
+and the file may only raise `train_start`, to 1993-02-01 (SPY starts
+1993-01-29), which must fall inside the research train window. The broad train
+window is therefore 1993-02-01 to 2004-12-31, twelve years, and reports say
+so. Bars are loaded from 1992-01-02 up to the validation window end only: test
+window bars are never read, and the registry records the windows actually run.
+
+Excluded names: the 24 ETFs (not companies), AES (an unverified 2001-09-26
+halving) and USB (an unverified 1993-02-25 seven-to-one one-day drop). Both
+are owner exclusions pending a second source for the corporate action, not
+conclusions that the data is wrong.
+
+Eligibility is applied point in time, each day, by a wrapper around the
+strategy. A name is eligible if it is in the list, has at least 252 visible
+sessions, has printed a bar within the risk engine's staleness limit (5 days,
+taken from the risk config, so a frozen name cannot hold a slot the risk engine
+refuses to fill), and the median of close times volume over its last 63 visible
+sessions is at least 500,000 dollars. The floor is derived, not chosen: a 5%
+position of 100,000 dollars is 5,000 dollars, and at the 1% participation cap
+that needs 500,000 dollars of daily traded value to fill in one session.
+Adjusted close times adjusted volume is the raw dollar volume, so the screen
+does not move when a later split or dividend rewrites old prices. A name that
+stops being eligible gets an explicit exit.
+
+`ma_trend` is capped at 20 names (`max_names`), ranked by fast over slow
+average, ties by symbol. The cap
+limits the book to 20 names but does not make the risk cap irrelevant: the
+risk engine counts unfilled orders toward `max_positions`, so a rotation (an
+exit and an entry on the same signal day) fills one session late, and the cap
+can still refuse an ENTER on the signal day. Without the cap, 466 names under a 20 position risk
+limit would hold whichever 20 sorted first alphabetically and produce hundreds
+of rejected orders a day. `xs_momentum` holds the top 20 at 5% each.
+
+Dropped from the broad run: `vol_targeted_trend`, because the 5% single-name
+cap binds before volatility scaling and it duplicates `ma_trend` exactly (the
+21 name results show identical numbers); and `zscore_mean_reversion`, because
+it is quadratic in history length, which is too slow at this scale. Dropping
+them is a scale decision, not a result.
+
+Survivorship bias grows with breadth. Every name here survived to 2026, so
+more names means more survivors being treated as if they were knowable in
+1993. The eligibility screen narrows who can be traded on a given day; it does
+not bring back the companies that failed, were delisted or were acquired.
+Read the broad figures as an upper bound on what the method could have done.
+
+## 15. Every strategy is reported twice: as traded, and strategy only
+
+The portfolio drawdown breaker (10% from peak equity) never resets. After one
+deep drawdown it refuses every later entry, so the rest of a run is cash and
+the table measures the breaker, not the strategy. On the 21 name run, ma_trend
+was locked out from 1987-10-16 to the end of the train window.
+
+Every research strategy therefore appears on two rows. "As traded" is exactly
+the old behaviour with the default `RiskConfig`, breaker on, and its numbers
+are byte-identical to before. "Strategy only" (label suffix " (strategy only)",
+strategy id suffix `_nobreaker`) is the same strategy on an engine whose only
+difference is the drawdown breaker; position cap, single name cap, daily loss
+breaker, staleness, order caps and participation are all unchanged. The
+buy-and-hold benchmark is not doubled, and the test window gets no second row,
+because the single hold-out look is keyed to the as-traded specs.
+
+The breaker is switched off by building a research-only `RiskConfig` with the
+limit at 100% (`pipeline.strategy_only_risk`), not by adding an off switch to
+`RiskConfig`. A 100% drawdown only trips if equity is gone. Defaults and
+`risk.yaml` are untouched, and nothing in `signalforge/paper` or `paper_cli`
+names the helper; a test fails if they do. The paper book keeps the breaker.
+
+Neither row is the answer. As traded is what the guard would have allowed.
+Strategy only shows what the signal did without the guard and will usually
+look better, with larger drawdowns that the breaker exists to prevent. Lockout
+notes stay on the as-traded rows.
+
+## 16. A forecaster is put on trial before anything trades on it
+
+`signalforge/forecasting/` adds probabilistic path forecasters (Kronos, a
+block bootstrap, a driftless random walk) and a walk-forward trial that
+scores their cones: 10-90 coverage, PIT histogram, CRPS, and directional hit
+rate bucketed by path agreement, regime and spread.
+
+The nulls are the point. A cone that covers about 80% and a hit rate that
+rises with agreement both come free from a bootstrap of the last two years
+of returns, and neither beats calling UP on every window (see
+`reports/KRONOS_TRIAL.md`). A model's confidence display means something only
+when it beats them on the same origins.
+
+Choices that are not obvious:
+
+- **Forecasters get a `ContextWindow`, never a view.** The window is cut from
+  `history.view(origin)`, ends on the origin, owns a frozen copy of its
+  arrays, and refuses a short or stale history. The trial reads realized
+  closes itself and refuses any outcome dated after the window's end.
+- **Kronos samples paths one at a time.** Upstream `predict(sample_count=N)`
+  returns the mean of N samples, one line rather than a cone. The adapter
+  repeats the context along the batch axis with `sample_count=1`, and
+  `kronos-check` fails if the paths collapse.
+- **Weights come from disk only.** No hub ids, so no code path in the
+  package opens a connection; a test pins that no forecasting module imports
+  a network library.
+- **The test window is refused by the CLI.** Trials run on train or
+  validation. The holdout is spent once, through `research_cli --run-holdout`.
+- **The lift figure has an evidence floor.** TRENDING minus CHOPPY hit rate
+  is reported only when both sides have 30 or more calls, the same floor as
+  `min_trades_for_evidence`.
+- **The cone strategy is research-only.** `ForecastConeStrategy` is an
+  ordinary `BaseStrategy` that runs through the engine, but it lives outside
+  `strategies/`, and a test fails if `paper/`, `strategies/` or `risk/`
+  import the forecasting package.
+- **The trial has its own dashboard tab, Crucible.** `forecast_cli trial` writes
+  `dashboard/build/forecast.html`, linked from the operator page by a tab
+  strip. It keeps the operator page's rules: no script, nothing from the
+  network, a caption on every chart, every interpolation escaped (the
+  scanner now covers it). The motion is CSS only and switches off under
+  `prefers-reduced-motion`. `python -m signalforge.dashboard` writes a
+  DATA UNAVAILABLE version when no trial has run, so the tab never 404s.
+  It stays local: the Cloudflare dashboard Worker is not given price data.
+
+## 17. Crucible reaches the phone as scores, never prices
+
+The Cloudflare dashboard gets a Crucible tab fed by a new `forecast_trial`
+report (`forecast_cli trial --report`). The report schema has no field that
+can hold a price: trial scores, a forward cone as fractional returns from the
+origin close, and simulated equity. Both validators (Python and the Worker)
+reject unknown fields, so a price cannot be added without changing the
+contract in two places, and `tests/test_crucible_report.py` runs the Python-
+built report through the Worker's own code to catch drift between them.
+
+Replays stay local-only: a realized path is a real price series, rebased or
+not. The Worker source now lives in `cloudflare/` so the deployed code has a
+reviewed home; deployment stays a manual step (README there), because this
+repository holds no Cloudflare deploy credential and should not.
+
+## 18. Assay: copy-trading is tested on what was knowable, next to the version that cheats
+
+Copy-trading pitches pick "winners" by how their trades turned out, then show
+what copying those same trades would have made. `signalforge/insiders/` tests
+the stock-market version of the idea, copying company insiders' disclosed
+open-market purchases (SEC Form 4), and puts the pitch's method beside the
+honest one so the gap is visible.
+
+- **The honest pick decides before each trade.** An insider is "smart" only
+  on copied buys whose exit date is before their next buy's signal day: at
+  least 3 of them, 60% or more winners, positive average. A test changes the
+  outcome of a later trade and checks the earlier decision does not move.
+- **The hindsight pick is kept, and labelled.** Same thresholds, judged on all
+  of an insider's trades in the window. In a synthetic world where insiders
+  have no edge at all it shows a 73% win rate and a 54% a year book while the
+  honest pick matches random. That is the trap, measured.
+- **Beating SPY is not the test.** The warehouse holds only companies that
+  survived to 2026, so nearly anything bought in it beats SPY. Every arm is
+  judged against two fair coins: random warehouse stocks on the same days,
+  and random insider purchases filed in the same months.
+- **Entry is the close after the filing day.** The data has no filing time,
+  so a filing made after the close cannot be traded that day. Costs are 5 bps
+  each way.
+- **Rows are dropped, never repaired, and counted.** Amendments, joint
+  filings, 10b5-1 planned trades, non-common stock, filed prices outside
+  0.5x to 2x the market close, and unexplained >1.4x daily jumps while held
+  (unless acknowledged in `price_move_acknowledgements`). The funnel from
+  filings to trades is on the page.
+- **Tickers map through the issuer's CIK.** An issuer's ticker is the one on
+  its latest filing, so a rename keeps its history; a reused ticker belongs to
+  its latest user.
+- **Validation window only.** The SEC data starts in 2006, so the train window
+  has none; the CLI refuses the test window, as `forecast_cli` does.
+- **SEC data is public and its own source.** It is a new `filings` kind in
+  `config/data_sources.yaml`. The downloader declares a contact User-Agent
+  and pauses between files, per the SEC's fair-access policy.

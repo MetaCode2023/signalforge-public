@@ -793,6 +793,13 @@ def event_table_html(table_id: str, events: Sequence[RiskEvent]) -> str:
     return table_html(table_id, EVENT_HEADERS, event_rows(events), "<p>Checked: 0 matching risk events.</p>")
 
 
+def drawdown_limit_html(parameters, config) -> str:
+    """The drawdown limit beside a run, or a note that its breaker was off."""
+    if "risk_drawdown_breaker" in parameters:
+        return " (breaker off: strategy only)"
+    return f" (limit {pct(config.risk.max_portfolio_drawdown)})" if config is not None else ""
+
+
 def risk_run_html(run: RunView, config) -> str:
     r, m = run.result, run.metrics
     i = run.index
@@ -824,7 +831,7 @@ def risk_run_html(run: RunView, config) -> str:
         day_html = (
             f"{pct(day[0])} on {esc(day[1].isoformat())}{limit_day_html}" if day else na("fewer than 2 equity points")
         )
-        limit_dd_html = f" (limit {pct(config.risk.max_portfolio_drawdown)})" if config is not None else ""
+        limit_dd_html = drawdown_limit_html(r.parameters, config)
         dd_html = f"{pct(dd_now)}{limit_dd_html}"
         charts_html = drawdown_chart(
             equity_points(r), title=text("Underwater chart, ", r.strategy_id), uid=rid("rc-dd", i)

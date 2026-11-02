@@ -591,7 +591,7 @@ def test_values_derived_from_data_cannot_break_out_of_attributes():
 
 def test_every_dashboard_fstring_interpolation_is_escaped_or_prebuilt():
     violations = []
-    for name in ("render.py", "sections.py", "charts.py", "serve.py", "__main__.py"):
+    for name in ("render.py", "sections.py", "charts.py", "serve.py", "__main__.py", "forecast_page.py", "assay_page.py"):
         violations += interpolation_violations(DASHBOARD_DIR / name)
     assert violations == []
 

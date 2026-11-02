@@ -483,3 +483,40 @@ Replays stay local-only: a realized path is a real price series, rebased or
 not. The Worker source now lives in `cloudflare/` so the deployed code has a
 reviewed home; deployment stays a manual step (README there), because this
 repository holds no Cloudflare deploy credential and should not.
+
+## 18. Assay: copy-trading is tested on what was knowable, next to the version that cheats
+
+Copy-trading pitches pick "winners" by how their trades turned out, then show
+what copying those same trades would have made. `signalforge/insiders/` tests
+the stock-market version of the idea, copying company insiders' disclosed
+open-market purchases (SEC Form 4), and puts the pitch's method beside the
+honest one so the gap is visible.
+
+- **The honest pick decides before each trade.** An insider is "smart" only
+  on copied buys whose exit date is before their next buy's signal day: at
+  least 3 of them, 60% or more winners, positive average. A test changes the
+  outcome of a later trade and checks the earlier decision does not move.
+- **The hindsight pick is kept, and labelled.** Same thresholds, judged on all
+  of an insider's trades in the window. In a synthetic world where insiders
+  have no edge at all it shows a 73% win rate and a 54% a year book while the
+  honest pick matches random. That is the trap, measured.
+- **Beating SPY is not the test.** The warehouse holds only companies that
+  survived to 2026, so nearly anything bought in it beats SPY. Every arm is
+  judged against two fair coins: random warehouse stocks on the same days,
+  and random insider purchases filed in the same months.
+- **Entry is the close after the filing day.** The data has no filing time,
+  so a filing made after the close cannot be traded that day. Costs are 5 bps
+  each way.
+- **Rows are dropped, never repaired, and counted.** Amendments, joint
+  filings, 10b5-1 planned trades, non-common stock, filed prices outside
+  0.5x to 2x the market close, and unexplained >1.4x daily jumps while held
+  (unless acknowledged in `price_move_acknowledgements`). The funnel from
+  filings to trades is on the page.
+- **Tickers map through the issuer's CIK.** An issuer's ticker is the one on
+  its latest filing, so a rename keeps its history; a reused ticker belongs to
+  its latest user.
+- **Validation window only.** The SEC data starts in 2006, so the train window
+  has none; the CLI refuses the test window, as `forecast_cli` does.
+- **SEC data is public and its own source.** It is a new `filings` kind in
+  `config/data_sources.yaml`. The downloader declares a contact User-Agent
+  and pauses between files, per the SEC's fair-access policy.

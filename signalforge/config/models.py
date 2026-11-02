@@ -437,7 +437,7 @@ class ProviderConfig(_Frozen):
     """
 
     name: str
-    kind: Literal["series", "bars", "archive"]
+    kind: Literal["series", "bars", "archive", "filings"]
     status: Literal["active", "pending_key", "rejected"] = "active"
     enabled: bool = False
     requires_key: bool = False

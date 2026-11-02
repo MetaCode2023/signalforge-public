@@ -1,4 +1,4 @@
-# Copy-trading data pile: catalog
+﻿# Copy-trading data pile: catalog
 
 Built overnight 2026-11-01 to 11-02 on the operator's PC. Every source is free,
 public and legal; nothing was bought, no login or bot check was bypassed. All
@@ -45,12 +45,32 @@ data lives under gitignored folders (`data/raw/`, `data/copytrade/`,
 | `sec_companies`, `sec_company_former_names` (market_extras) | 991,164 / 73,092 | every SEC entity: SIC industry, tickers, exchanges, former names | SEC bulk submissions.zip |
 | `sec_fundamentals_core` (market_extras) | 6,395,612 facts, 16,950 companies | shares outstanding, revenue, net income, assets, equity, cash, buybacks | SEC XBRL companyfacts.zip |
 
+| `f13_crowding`, `f13_crowding_delta` (copytrade) | 1,259,520 security-quarters | how many 13F filers hold each CUSIP, value held, quarter-on-quarter change. A CUSIP change after a spin-off or merger shows as a false jump | derived |
+| `f13_implied_price` (copytrade) | 604,293 | quarter-end price per CUSIP = median of value / shares across all 13F reports; quartiles kept as a quality check | derived |
+| `cusip_map` (copytrade, D1) | 17,484 CUSIPs | CUSIP to SEC CIK (and current ticker for 9,659) by normalised issuer name, current and former names, unique matches only | derived |
+| `usaspending_top_contractors`, `usaspending_contractor_match` (market_extras) | 12,000 / 92 matched | top 1,000 federal contract recipients per fiscal year 2015 to 2026; recipients are legal entities, not parents, so few match a ticker | USAspending.gov API |
+
+### Quarterly prices from 13F (a free price layer)
+
+`f13_quarter_prices` in D1 keeps the high-confidence subset: 406,811
+quarter-end prices for 25,319 CUSIPs (10 or more reports, interquartile
+spread under 2%), 2013 to June 2026, delisted companies included. Checked
+against known closes: AAPL 222.13 / 205.17 / 254.63 and NVDA 108.38 / 157.99
+for 2025 Q1 to Q3. Joined through `cusip_map`, it prices 159,678 of 328,643
+insider purchases (49%) at 5,089 companies, against 3.3% for the daily
+warehouse. Limits: quarter-end only, NOT split-adjusted (13F reports the
+shares held on that date), long positions in 13F-reportable securities only.
+Good for 63-session and quarterly horizons, not for the 21-session headline.
+Using it on any date in the test window counts as reading the holdout.
+
 ## Cloudflare D1: `signalforge-copytrade` (company account)
 
 Compact, query-ready copies: `congress_trades`, `congress_members`,
 `house_paper_filings`, `insider_purchases`, `insider_cmp_class`,
 `insider_buy_clusters`, `guru_13f_holdings`, `guru_filings`,
-`activist_stakes`. About 150 MB. The full 13F and Form 3/4/5 tables stay
+`activist_stakes`, `congress_leadership_roles`, `f13_crowding` (last 8 quarters),
+`cusip_map`, `f13_quarter_prices`, and the view `copy_signals` (every copyable
+event in one list, with the date the public could see it). About 190 MB. The full 13F and Form 3/4/5 tables stay
 local. A live dashboard over it: https://claude.ai/artifact/4vVo5uep9RWkyFgFDizomk
 
 ## Known gaps and caveats
@@ -87,3 +107,4 @@ ORDER BY value_usd DESC;
 SELECT member, count(*) n, sum((disclosure_lag_days > 45)::INT) late
 FROM congress_trades_clean GROUP BY 1 HAVING n >= 50 ORDER BY late DESC;
 ```
+

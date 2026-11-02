@@ -68,8 +68,11 @@ a second run.
 - Event: a purchase disclosed by a member while in party leadership, entered
   after the report's filing date (not the trade date). Control: purchases by
   rank-and-file members in the same months.
-- Gap: leadership roles by date are not yet in the database (the committee
-  data is current only). Needs a dated leadership list before it can run.
+- Leadership by date: `congress_leadership_roles` (147 role terms since 2012,
+  from unitedstates/congress-legislators, CC0; local and D1). Leadership as
+  that source defines it, which includes conference and policy chairs, not
+  only Speaker, leaders and whips. Decide before the run whether to use all
+  of it or the narrow set (Speaker, majority and minority leaders, whips).
 - Prior: weak. Peer-reviewed post-2012 studies find no edge for Congress as a
   whole.
 
@@ -89,4 +92,3 @@ a second run.
 2. The size and beta matched null.
 3. Price coverage beyond the 493 warehouse symbols, or acceptance that most
    events cannot be priced.
-4. For H5, a dated leadership list.

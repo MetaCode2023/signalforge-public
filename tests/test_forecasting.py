@@ -453,5 +453,16 @@ def test_cli_trial_and_cone_run_end_to_end_on_a_real_warehouse(tmp_path, capsys,
     page = tmp_path / "dashboard" / "build" / "forecast.html"
     assert page.exists() and "SYN, the next 24 sessions" in page.read_text()
 
+    capsys.readouterr()
+    assert main([
+        "trial", "--symbols", "SYN", "--window", "validation", "--db", str(db),
+        "--config-dir", str(PACKAGE.parent / "config"), "--source", "tiingo", "--forecaster", "bootstrap",
+        "--paths", "50", "--out", str(out), "--no-dashboard", "--report-dry-run",
+    ]) == 0
+    printed = capsys.readouterr().out
+    assert "dry run: Crucible report valid, nothing sent" in printed
+    report = json.loads(next(line for line in printed.splitlines() if line.startswith("{")))
+    assert report["event_type"] == "forecast_trial" and "cone" in report["payload"]
+
     assert main(["cone", "--symbol", "SYN", "--db", str(db), "--paths", "40"]) == 0
     assert "paths up" in capsys.readouterr().out

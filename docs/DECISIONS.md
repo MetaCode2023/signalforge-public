@@ -469,9 +469,22 @@ Choices that are not obvious:
   DATA UNAVAILABLE version when no trial has run, so the tab never 404s.
   It stays local: the Cloudflare dashboard Worker is not given price data.
 
-## 18. Assay: copy-trading is tested on what was knowable, next to the version that cheats
+## 17. Crucible reaches the phone as scores, never prices
 
-(§17 is Crucible on the Cloudflare dashboard, PR #6.)
+The Cloudflare dashboard gets a Crucible tab fed by a new `forecast_trial`
+report (`forecast_cli trial --report`). The report schema has no field that
+can hold a price: trial scores, a forward cone as fractional returns from the
+origin close, and simulated equity. Both validators (Python and the Worker)
+reject unknown fields, so a price cannot be added without changing the
+contract in two places, and `tests/test_crucible_report.py` runs the Python-
+built report through the Worker's own code to catch drift between them.
+
+Replays stay local-only: a realized path is a real price series, rebased or
+not. The Worker source now lives in `cloudflare/` so the deployed code has a
+reviewed home; deployment stays a manual step (README there), because this
+repository holds no Cloudflare deploy credential and should not.
+
+## 18. Assay: copy-trading is tested on what was knowable, next to the version that cheats
 
 Copy-trading pitches pick "winners" by how their trades turned out, then show
 what copying those same trades would have made. `signalforge/insiders/` tests

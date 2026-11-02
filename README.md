@@ -178,7 +178,8 @@ results are a single-instrument proxy study.
 against two nulls on the train or validation window. The first run, with the
 nulls only, is in [`reports/KRONOS_TRIAL.md`](reports/KRONOS_TRIAL.md); it
 sets the bar Kronos has to clear and has the commands to run Kronos itself.
-Each trial also refreshes the dashboard's Crucible tab.
+Each trial also refreshes the dashboard's Crucible tab, and `--report` sends its
+scores (never prices) to the private Cloudflare dashboard; see [`cloudflare/`](cloudflare/README.md).
 
 ## Assay: copying insiders
 

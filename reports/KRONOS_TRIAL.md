@@ -127,6 +127,7 @@ Expect hours on CPU for all eight symbols; start with SPY (104 forecasts).
   61.4%. Individual buckets move by several points between seeds, which is
   why none of them is read as evidence on its own.
 
-Aggregates: `reports/forecast_trial_2005-2014_nulls.json`. Per-forecast
+Aggregates, with the engine run's final equity and Sharpe:
+`reports/forecast_trials/trial-random_walk+block_bootstrap-2005-01-01-2014-12-31.json`. Per-forecast
 detail is licensed-derived and lives under `data/forecast_trials/`
 (gitignored).

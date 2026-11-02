@@ -172,6 +172,13 @@ data does and does not support. The short version: there is no per-symbol
 OHLCV history available from any keyless, terms-clean source, so the current
 results are a single-instrument proxy study.
 
+## Scoreboard
+
+`python -m signalforge.dashboard` builds a Scoreboard tab, first in the tab strip: every strategy,
+forecaster and copy-trading rule tested so far, each against a bar measured on
+the same data, with the verdict worked out from the recorded numbers. Rules:
+[`docs/DECISIONS.md` §19](docs/DECISIONS.md).
+
 ## Forecast trials
 
 `python -m signalforge.forecast_cli trial` puts a path forecaster on trial

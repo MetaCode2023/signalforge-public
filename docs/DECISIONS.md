@@ -520,3 +520,39 @@ honest one so the gap is visible.
 - **SEC data is public and its own source.** It is a new `filings` kind in
   `config/data_sources.yaml`. The downloader declares a contact User-Agent
   and pauses between files, per the SEC's fair-access policy.
+
+## 19. The Scoreboard: every idea against one bar, verdicts computed
+
+The dashboard's first tab answers one question for every idea tested: did it
+beat just buying and holding, once costs and risk are counted? It is built
+from the evidence on every render, never typed in.
+
+- **A bar is only ever measured on the same data.** Classic strategies come
+  from the `experiments` table, grouped by dataset fingerprint and window; the
+  bar is the buy-and-hold row in that same group, and a group without one is
+  not scored. A rebuilt warehouse (same dataset, more bars) replaces the older
+  group rather than adding a second table.
+- **Validation and test only.** Train rows, walk-forward folds (descriptions
+  carrying `limitations:`) and the strategy-only `_nobreaker` variants stay in
+  the Learning Lab. The test window shows whatever its single look recorded.
+- **Ties and thin wins are not wins.** Sharpe within 0.005 of the bar is a
+  tie. A strategy ahead of the bar on `INSUFFICIENT_EVIDENCE` reads "ahead,
+  too few trades" and is not counted as clearing it.
+- **Forecasters beat the always-up rate only with their whole interval.** The
+  low end of the 95% Wilson interval must clear the base rate; an interval
+  that straddles it is "too close to call". Fewer than 30 calls is "too few to
+  judge". With `--backtest`, the trial record now also stores each engine
+  run's final equity and Sharpe (no curve), so the cone rule is scored against
+  buy-and-hold on the same stocks.
+- **Insider strategies face random insiders.** p < 0.05 against random
+  insiders filing in the same months, or "no edge found". Hindsight picks are
+  listed and never scored.
+- **Queued is a verdict.** Kronos and the insider strategies show as queued
+  until a record containing them exists, so the board never implies more was
+  tested than was.
+- **A win on the board is a lead, not a promotion.** The headline says so;
+  promotion still needs the gate's walk-forward checks and a named approver.
+- **It refreshes itself.** `python -m signalforge.dashboard` rebuilds it, and
+  every `forecast_cli trial` and `insider_cli trial` rewrites it beside their
+  own page. A refresh that fails (a locked warehouse, say) prints a note and
+  never fails the trial.

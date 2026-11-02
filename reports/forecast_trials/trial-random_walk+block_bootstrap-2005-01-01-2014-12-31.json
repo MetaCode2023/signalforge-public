@@ -337,5 +337,19 @@
   ],
   "crps_skill_vs_random_walk": {
     "block_bootstrap": 0.008037
+  },
+  "backtest": {
+    "buy_and_hold": {
+      "final": 260446.52,
+      "sharpe": 0.856112
+    },
+    "cone_block_bootstrap": {
+      "final": 110688.96,
+      "sharpe": 0.460346
+    },
+    "cone_random_walk": {
+      "final": 100478.58,
+      "sharpe": 0.402038
+    }
   }
 }

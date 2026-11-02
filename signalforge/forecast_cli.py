@@ -147,16 +147,33 @@ def cmd_trial(args) -> int:
     table = render_markdown(record)
     (out / f"{stem}.md").write_text(table, encoding="utf-8")
     print(table)
-    if args.no_dashboard and not (args.report or args.report_dry_run):
+    if args.no_dashboard and not (args.report or args.report_dry_run or args.backtest):
         return 0
     data = build_page(args, record, hist.history, results, forecasters, symbols, start, end, bundle)
+    if data.backtest:
+        # The engine run belongs in the saved record too, so the scoreboard can score it later.
+        saved = with_backtest(record, data.backtest)
+        (out / f"{stem}.json").write_text(json.dumps(saved, indent=2), encoding="utf-8")
     if not args.no_dashboard:
         from signalforge.dashboard.forecast_page import write_forecast_page
+        from signalforge.dashboard.scoreboard_page import refresh_scoreboard
 
         print("wrote", write_forecast_page(args.dashboard_out, data))
+        board = refresh_scoreboard(Path(args.dashboard_out).parent / "scoreboard.html", args.db, out.parent)
+        if board is not None:
+            print("wrote", board)
     if args.report or args.report_dry_run:
         return send_report(args, record, data, symbols, start, end)
     return 0
+
+
+def with_backtest(record: dict, backtest: dict) -> dict:
+    """A copy of the trial record carrying each engine run's final equity and Sharpe (no curve, no prices)."""
+    summary = {
+        label: {"final": run.get("final"), "sharpe": run.get("sharpe")}
+        for label, run in backtest.items()
+    }
+    return {**record, "backtest": summary}
 
 
 def send_report(args, record, data, symbols, start, end) -> int:

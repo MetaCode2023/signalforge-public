@@ -145,6 +145,11 @@ def cmd_trial(args) -> int:
         from signalforge.dashboard.assay_page import write_assay_page
 
         print("wrote", write_assay_page(args.dashboard_out, rec))
+        from signalforge.dashboard.scoreboard_page import refresh_scoreboard
+
+        board = refresh_scoreboard(Path(args.dashboard_out).parent / "scoreboard.html", args.db, out.parent)
+        if board is not None:
+            print("wrote", board)
     return 0
 
 

@@ -63,8 +63,11 @@ def test_no_trial_renders_data_unavailable():
     assert "DATA UNAVAILABLE" in html and "insider_cli download" in html and "<svg" not in html
 
 
-def test_all_three_pages_carry_all_three_tabs():
+def test_every_page_carries_every_tab():
+    from signalforge.dashboard.scoreboard_page import render_scoreboard_page
+
     pages = {
+        "scoreboard.html": render_scoreboard_page(),
         "index.html": render_dashboard(),
         "forecast.html": render_forecast_page(ForecastPageData()),
         "assay.html": render_assay_page(None),

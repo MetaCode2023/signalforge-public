@@ -7,13 +7,17 @@
         --reason "approved for paper trading"
     python -m signalforge.paper_cli --symbols AAPL,MSFT --source tiingo
     python -m signalforge.paper_cli --universe --approve buy_and_hold --approved-by austin --reason "approved for the universe book"
+    python -m signalforge.paper_cli --allocation --approve tsmom --approved-by austin --reason "approved for the allocation book"
+    python -m signalforge.paper_cli --allocation --start 2026-11-02
 
 With no approved strategy and no override, it refuses and says what would
 unblock it. That is deliberate: a loop that picks its own strategy is the
 same failure as a strategy promoting itself.
 
 --symbols/--universe run a book of real OHLCV on RAW prices with corporate
-actions booked. That book has its own approval: the NASDAQCOM one never
+actions booked. --allocation runs the allocation book in
+config/allocations/assets10.yaml (docs/DECISIONS.md 20) the same way, under
+that file's single-name cap; its parameters come from the file, not a flag. That book has its own approval: the NASDAQCOM one never
 authorises it. Before it trades, the benchmark's bar dates are used as the
 calendar and the run is refused (exit 3) if any symbol is stale or has holes.
 
@@ -28,7 +32,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from signalforge.config.models import load_all
+from signalforge.config.models import AllocationConfig, load_all, load_allocation
 from signalforge.core.errors import SignalForgeError
 from signalforge.data.storage import Warehouse
 from signalforge.paper.calendar import check_freshness
@@ -41,6 +45,7 @@ from signalforge.paper.runner import (
 from signalforge.pipeline import SURVIVORSHIP_NOTE, HistoryBundle, load_index_bundle, ohlcv_history
 
 DEFAULT_DB = Path("data") / "warehouse" / "signalforge.duckdb"
+DEFAULT_ALLOCATION = Path("config") / "allocations" / "assets10.yaml"
 
 # The only parameter set wired to the CLI, chosen a priori. Anything else
 # should go through the registry with a named approver rather than a flag.
@@ -71,6 +76,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="paper-trade the research.yaml universe from the warehouse OHLCV bars",
     )
+    mode.add_argument(
+        "--allocation",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_ALLOCATION,
+        default=None,
+        help="paper-trade an allocation book (default config/allocations/assets10.yaml)",
+    )
     p.add_argument("--source", default="tiingo")
     p.add_argument("--benchmark", default="SPY", help="its bar dates are the trading calendar")
     p.add_argument("--through", type=str, default=None, help="YYYY-MM-DD")
@@ -98,6 +111,24 @@ def _book_params(params: dict, symbols: list[str] | None) -> dict:
     return params if symbols is None else {**params, "symbols": list(symbols)}
 
 
+def allocation_params(allocation: AllocationConfig, strategy_id: str) -> dict | None:
+    """The allocation book's parameters, taken from its file. Two strategies only."""
+    symbols = sorted(allocation.symbols)
+    weight = str(allocation.target_weight)
+    if strategy_id == "tsmom":
+        return {"symbols": symbols, "lookback": allocation.lookback, "target_weight": weight}
+    if strategy_id == "buy_and_hold":
+        return {"symbols": symbols, "target_weight": weight}
+    return None
+
+
+def _params_for(strategy_id: str, symbols, allocation: AllocationConfig | None) -> dict | None:
+    if allocation is not None:
+        return allocation_params(allocation, strategy_id)
+    params = DEFAULT_PARAMS.get(strategy_id)
+    return None if params is None else _book_params(params, symbols)
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     if not args.db.exists():
@@ -116,10 +147,20 @@ def main(argv=None) -> int:
             print(f"--start must be a YYYY-MM-DD date, got {args.start!r}")
             return 2
 
-    ohlcv = args.symbols is not None or args.universe
+    allocation = None
+    if args.allocation is not None:
+        try:
+            allocation = load_allocation(args.allocation)
+        except SignalForgeError as exc:
+            print(f"refused: {exc}")
+            return 2
+    ohlcv = args.symbols is not None or args.universe or allocation is not None
     symbols = None
     book_id = DEFAULT_BOOK_ID
-    if ohlcv:
+    if allocation is not None:
+        symbols = sorted(allocation.symbols)
+        book_id = f"allocation:{allocation.name}"
+    elif ohlcv:
         symbols = sorted(set(load_all().research.universe if args.universe else args.symbols))
         if not symbols:
             print("refused: no symbols to trade (--symbols is empty or research.universe is empty)")
@@ -129,17 +170,15 @@ def main(argv=None) -> int:
     warehouse = Warehouse(str(args.db))
     try:
         if args.approve:
-            params = DEFAULT_PARAMS.get(args.approve)
+            params = _params_for(args.approve, symbols, allocation)
             if params is None:
-                print(
-                    f"no default parameters for {args.approve!r}; known: "
-                    f"{sorted(DEFAULT_PARAMS)}"
-                )
+                known = ["buy_and_hold", "tsmom"] if allocation is not None else sorted(DEFAULT_PARAMS)
+                print(f"no default parameters for {args.approve!r}; known: {known}")
                 return 2
             record_active_strategy(
                 warehouse,
                 strategy_id=args.approve,
-                parameters=_book_params(params, symbols),
+                parameters=params,
                 approved_by=args.approved_by,
                 reason=args.reason,
                 book_id=book_id,
@@ -167,16 +206,19 @@ def main(argv=None) -> int:
 
         override = None
         if args.override_strategy:
-            params = DEFAULT_PARAMS.get(args.override_strategy)
+            params = _params_for(args.override_strategy, symbols, allocation)
             if params is None:
                 print(f"no default parameters for {args.override_strategy!r}")
                 return 2
-            override = (args.override_strategy, _book_params(params, symbols))
+            override = (args.override_strategy, params)
 
+        # An allocation book replaces only the single-name cap (decision 20);
+        # every other book, and every other limit, keeps risk.yaml.
+        risk = allocation.risk(config.risk) if allocation is not None else config.risk
         runner = PaperRunner(
             warehouse=warehouse,
             research=config.research,
-            risk=config.risk,
+            risk=risk,
             override_strategy=override,
             override_reason=args.override_reason,
             start=start,

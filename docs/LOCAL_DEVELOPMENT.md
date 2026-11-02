@@ -206,6 +206,21 @@ html = render_dashboard(warehouse=w, paper_runs=[run.result], config=bundle)
 `run.result` is a `BacktestResult` built from the broker's own end-of-day
 statements, so the page cannot disagree with the statements behind it.
 
+### The allocation book
+
+```bash
+python -m signalforge.paper_cli --allocation --approve tsmom --approved-by <you> --reason "<why>"
+python -m signalforge.paper_cli --allocation --start YYYY-MM-DD
+python -m signalforge.paper_cli --allocation
+```
+
+A separate book (`allocation:assets10`, decision 20) with its own approval.
+The first command records who approved it and why; the second starts it on a
+chosen first session; after that, a plain `--allocation` continues it, and
+`signalforge-daily.cmd` runs that every day. It trades under the allocation
+file's 10% single-name cap and every other `risk.yaml` limit, including the
+drawdown breaker. It refuses to run while any of its ten ETFs is stale.
+
 ## 5. Read the dashboard
 
 ```bash

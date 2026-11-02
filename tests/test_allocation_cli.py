@@ -115,8 +115,9 @@ def test_the_holdout_is_refused(capsys):
     assert "held-out test window is not run" in capsys.readouterr().out
 
 
-def test_paper_code_never_names_the_allocation_profile():
-    paper = list((ROOT / "signalforge" / "paper").rglob("*.py")) + [ROOT / "signalforge" / "paper_cli.py"]
-    for path in paper:
+def test_the_paper_engine_never_names_the_allocation_profile():
+    # paper_cli chooses the risk config for an allocation book (decision 20);
+    # the runner and broker only ever receive one and cannot pick their own.
+    for path in (ROOT / "signalforge" / "paper").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert "allocation" not in text.lower(), path

@@ -571,3 +571,33 @@ already has. Everything below was fixed before any result was seen.
 - **The test window is refused.** `allocation_cli --run-holdout` exits without
   running. Spending the one honest look on this book is a separate decision,
   to be written here before it is made.
+
+## 20. The allocation book paper-trades as its own book, under its file's cap
+
+`paper_cli --allocation` runs `config/allocations/assets10.yaml` as a paper
+book with the id `allocation:assets10`. It follows decision 19's rule and the
+existing paper rules, with three points of its own:
+
+- **Its own approval, from the file.** `--allocation --approve tsmom
+  --approved-by <name> --reason <why>` records the strategy for that book only;
+  no other book's approval authorises it, and it authorises no other book.
+  The parameters (symbols, lookback, weight) come from the file, not a flag,
+  and only `tsmom` and `buy_and_hold` can be approved for it. Changing the
+  file's symbols makes the next run refuse until the book is re-approved, as
+  for any OHLCV book.
+- **One limit differs, chosen by the CLI.** `paper_cli` hands the runner the
+  file's single-name cap (10%) for this book and `risk.yaml` for every other.
+  The runner and broker cannot choose their own: a test fails if anything
+  under `signalforge/paper` mentions the allocation. Every other limit holds,
+  including the 10% portfolio drawdown breaker, which never resets (decision
+  15 keeps it on paper books). A diversified book that is often 60 to 80%
+  invested can still trip it in a crash before the monthly rule exits. If it
+  trips, the book stops entering and says so; lifting it is the operator's
+  decision, not the code's.
+- **Signals on adjusted closes, trades on raw.** Like the universe book, the
+  book runs on raw prices with splits and dividends booked by the broker. The
+  rule reads adjusted closes, so a dividend or a split never looks like a
+  trend change.
+
+The freshness gate checks all ten ETFs against SPY's calendar, so the book
+cannot trade until the daily collector keeps all ten current.

@@ -643,6 +643,36 @@ def broad_specs(
     ]
 
 
+ALLOCATION_NOTE = (
+    "ALLOCATION BOOK {name}: {count} ETFs at {weight} of equity each, under a research-only "
+    "risk profile whose single-name cap is {cap} instead of the stock book's default; every "
+    "other limit is unchanged, including the per-trade risk budget, which sizes an entry "
+    "smaller when trailing volatility is high. The benchmark is the same ETFs bought on "
+    "their first bar and never sold, so the comparison isolates the timing rule. The engine "
+    "enters and exits but never trims, so a held position drifts with its price between "
+    "decisions instead of being rebalanced back to {weight}. A name enters the basket on its "
+    "first bar but the trend rule only after {lookback} sessions of history."
+)
+
+
+def allocation_specs(
+    symbols: tuple[str, ...], lookback: int, target_weight: Decimal
+) -> list[tuple[str, str, dict]]:
+    """The equal-weight basket first, so the trend rule is measured against it."""
+    return [
+        (
+            f"Equal-weight basket, never sold (benchmark, {len(symbols)} ETFs)",
+            "buy_and_hold",
+            {"symbols": symbols, "target_weight": target_weight},
+        ),
+        (
+            f"Time-series momentum {lookback}d, monthly ({len(symbols)} ETFs)",
+            "tsmom",
+            {"symbols": symbols, "lookback": lookback, "target_weight": target_weight},
+        ),
+    ]
+
+
 def overlay_specs(
     specs: list[tuple[str, str, dict]], gates: list[RiskOffGate]
 ) -> list[tuple[str, str, dict]]:

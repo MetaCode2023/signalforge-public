@@ -18,6 +18,15 @@ echo -- paper trade the universe book>> %LOG%
 %PY% -m signalforge.paper_cli --universe >> %LOG% 2>&1
 >> %LOG% echo exit %ERRORLEVEL%
 
+rem Refuses (logged, exit 3) until the book is approved and started with --start.
+echo -- paper trade the allocation book>> %LOG%
+%PY% -m signalforge.paper_cli --allocation >> %LOG% 2>&1
+>> %LOG% echo exit %ERRORLEVEL%
+
+echo -- write the Allocation tab>> %LOG%
+%PY% -m signalforge.allocation_cli --state >> %LOG% 2>&1
+>> %LOG% echo exit %ERRORLEVEL%
+
 echo -- send reports to the dashboard>> %LOG%
 %PY% -m signalforge.report_cli push >> %LOG% 2>&1
 >> %LOG% echo exit %ERRORLEVEL%

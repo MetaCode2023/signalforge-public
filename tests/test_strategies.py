@@ -463,7 +463,8 @@ def test_buyhold_does_not_signal_a_symbol_before_it_has_data():
 # --- registry ------------------------------------------------------------
 
 def test_registry_has_every_strategy_id():
-    assert set(STRATEGIES) == {"ma_trend", "xs_momentum", "zscore_mean_reversion", "vol_targeted_trend", "buy_and_hold"}
+    assert set(STRATEGIES) == {"ma_trend", "xs_momentum", "zscore_mean_reversion", "vol_targeted_trend",
+                               "tsmom", "buy_and_hold"}
     for sid, cls in STRATEGIES.items():
         assert cls.strategy_id == sid
 
